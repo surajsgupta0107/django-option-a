@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+*.egg-info/
+.env
+
+# SQLite (local dev DBs — not used once Postgres via docker-compose is set up)
+*.db
+db.sqlite3
+
+# Node / frontend
+node_modules/
+dist/
+frontend/dist/
+static/react/
+staticfiles/
+
+# OS
+.DS_Store
