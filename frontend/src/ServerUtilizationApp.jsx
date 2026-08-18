@@ -9,6 +9,14 @@ import {
   FileSpreadsheet, Send, History, MessageSquare, ArrowUpDown, AlertCircle, RefreshCw,
 } from "lucide-react";
 
+/* ---------------------------------- FEATURE FLAGS ---------------------------------- */
+// Toggle features on/off without deleting any code. Flip to false, rebuild
+// (npm run build), redeploy — the tab, its nav entry, and its route all disappear
+// together; nothing is torn out, so re-enabling later is a one-line change back.
+const FEATURE_FLAGS = {
+  ownerPortalTab: true, // To disable: set ownerPortalTab: false. To bring it back later: flip it to true.
+};
+
 /* ---------------------------------- API CLIENT ---------------------------------- */
 // Built and served by Django itself (see /static/react + templates/react_app.html) —
 // same-origin as the API, so a relative path just works with zero config. Still
@@ -417,6 +425,9 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [view, setView] = useState("dashboard");
+  useEffect(() => {
+    if (view === "portal" && !FEATURE_FLAGS.ownerPortalTab) setView("dashboard");
+  }, [view]);
   const [toasts, setToasts] = useState([]);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -626,9 +637,9 @@ export default function App() {
         {[
           { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
           { key: "servers", label: "Servers", icon: Server },
-          { key: "portal", label: "Owner Portal", icon: UserRound },
+          { key: "portal", label: "Owner Portal", icon: UserRound, enabled: FEATURE_FLAGS.ownerPortalTab },
           { key: "settings", label: "Settings", icon: SlidersHorizontal },
-        ].map(item => (
+        ].filter(item => item.enabled !== false).map(item => (
           <div key={item.key} className={`suo-navitem ${view === item.key ? "active" : ""}`} onClick={() => setView(item.key)}>
             <item.icon size={15} />
             {item.label}

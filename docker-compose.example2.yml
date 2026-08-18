@@ -1,0 +1,88 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: server_utilization
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d server_utilization"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build: .
+    environment:
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: server_utilization
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-admin-key-change-me}
+      OWNER_LINK_SECRET: ${OWNER_LINK_SECRET:-dev-owner-link-secret-change-me}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:8000}
+      SMTP_HOST: ${SMTP_HOST:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  worker:
+    build: .
+    command: celery -A config worker --loglevel=info
+    environment:
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: server_utilization
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      OWNER_LINK_SECRET: ${OWNER_LINK_SECRET:-dev-owner-link-secret-change-me}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:8000}
+      SMTP_HOST: ${SMTP_HOST:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  beat:
+    build: .
+    command: celery -A config beat --loglevel=info -S django_celery_beat.schedulers:DatabaseScheduler
+    environment:
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: server_utilization
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+volumes:
+  pgdata:

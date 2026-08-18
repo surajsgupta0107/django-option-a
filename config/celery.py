@@ -19,7 +19,10 @@ app.autodiscover_tasks()
 app.conf.beat_schedule = {
     "flag-escalations-every-few-minutes": {
         "task": "servers_app.tasks.flag_escalations",
-        "schedule": crontab(minute="*/1"),  # every 1 minutes
+        # "schedule": crontab(minute="*/1"),  # every 1 minutes
+        # "schedule": crontab(minute="*/2"),  # every 2 minutes
+        # "schedule": crontab(minute="*/5"),  # every 5 minutes
+        "schedule": crontab(minute="*/10"),  # every 10 minutes
     },
 }
 # # added for testing in local, technique 2
