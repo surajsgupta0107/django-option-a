@@ -34,10 +34,54 @@ def send_reminder_email(server_id: int, sent_by: str = "admin"):
         subject=f"Utilization review needed: {server.name}",
         message=body,
         from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[server.owner_email],
+        # recipient_list=[server.owner_email],
+        recipient_list=[settings.DEFAULT_TO_EMAIL],  # added for testing
         fail_silently=False,
     )
     return {"server_id": server_id, "sent_to": server.owner_email}
+
+
+@shared_task(name="servers_app.tasks.send_reminder_digest_email")
+def send_reminder_digest_email(owner_email: str, server_ids: list, sent_by: str = "admin", digest_id: str = None):
+    """
+    One email covering several servers for the same owner, instead of one email per
+    server. Still creates one Reminder row per server (so per-server "reminders sent"
+    counts and the needs_reminder 30-day clock stay accurate) — they just all share
+    the same digest_id and were the result of a single actual email being sent.
+    """
+    from .models import Server, Reminder, ThresholdConfig
+    from .security import build_response_link
+
+    servers = list(Server.objects.filter(pk__in=server_ids))
+    if not servers:
+        logger.warning("send_reminder_digest_email: none of %s found", server_ids)
+        return
+
+    for s in servers:
+        Reminder.objects.create(server=s, sent_by=sent_by, digest_id=digest_id)
+
+    cfg = ThresholdConfig.get_or_create_singleton()
+    response_link = build_response_link([s.id for s in servers])
+
+    lines = []
+    for s in servers:
+        storage_note = f" / {s.storage_pct}% storage" if s.storage_pct is not None else ""
+        lines.append(f"- {s.name} ({s.application}, {s.environment}): {s.cpu_pct}% CPU / {s.memory_pct}% memory{storage_note}")
+    server_list = "\n".join(lines)
+
+    body = cfg.email_template_digest.format(
+        owner=servers[0].owner, count=len(servers), server_list=server_list, response_link=response_link,
+    )
+
+    send_mail(
+        subject=f"Utilization review needed: {len(servers)} servers",
+        message=body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        # recipient_list=[owner_email],
+        recipient_list=[settings.DEFAULT_TO_EMAIL],  # added for testing
+        fail_silently=False,
+    )
+    return {"owner_email": owner_email, "server_ids": [s.id for s in servers], "digest_id": digest_id}
 
 
 @shared_task(name="servers_app.tasks.flag_escalations")
@@ -66,7 +110,7 @@ def flag_escalations():
             subject=f"ESCALATION: {len(escalations)} server(s) need follow-up",
             message=body,
             from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=["surajsgupta0107@gmail.com"],
+            recipient_list=[settings.DEFAULT_TO_EMAIL],
             fail_silently=False,
         )
     return {"escalation_count": len(escalations)}

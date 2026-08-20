@@ -14,35 +14,43 @@ import {
 // (npm run build), redeploy — the tab, its nav entry, and its route all disappear
 // together; nothing is torn out, so re-enabling later is a one-line change back.
 const FEATURE_FLAGS = {
-  ownerPortalTab: true, // To disable: set ownerPortalTab: false. To bring it back later: flip it to true.
+  ownerPortalTab: true,
 };
 
 /* ---------------------------------- API CLIENT ---------------------------------- */
 // Built and served by Django itself (see /static/react + templates/react_app.html) —
 // same-origin as the API, so a relative path just works with zero config. Still
-// overridable from Settings for local `vite dev` usage against a different host/port.
+// overridable from the login screen for local `vite dev` usage against a different
+// host/port.
 const DEFAULT_API_BASE_URL = "/api";
 
-function loadApiConfig() {
-  try {
-    return {
-      baseUrl: localStorage.getItem("suo_api_base_url") || DEFAULT_API_BASE_URL,
-      adminKey: localStorage.getItem("suo_admin_api_key") || "dev-admin-key-change-me",
-    };
-  } catch {
-    return { baseUrl: DEFAULT_API_BASE_URL, adminKey: "dev-admin-key-change-me" };
-  }
+function loadApiBaseUrl() {
+  try { return localStorage.getItem("suo_api_base_url") || DEFAULT_API_BASE_URL; }
+  catch { return DEFAULT_API_BASE_URL; }
 }
-function saveApiConfig(baseUrl, adminKey) {
-  try {
-    localStorage.setItem("suo_api_base_url", baseUrl);
-    localStorage.setItem("suo_admin_api_key", adminKey);
-  } catch { /* localStorage unavailable — config just won't persist across reloads */ }
+function saveApiBaseUrl(baseUrl) {
+  try { localStorage.setItem("suo_api_base_url", baseUrl); } catch { /* unavailable */ }
 }
 
-async function apiFetch(baseUrl, path, { method = "GET", adminKey, body, isForm = false } = {}) {
+/* Real per-user auth (replaces the old shared-admin-key model). A successful login
+   returns a DRF auth token plus the account's role; both are cached in localStorage
+   so a reload doesn't force logging in again, and cleared entirely on logout. */
+function loadAuth() {
+  try {
+    const raw = localStorage.getItem("suo_auth");
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function saveAuth(auth) {
+  try { localStorage.setItem("suo_auth", JSON.stringify(auth)); } catch { /* unavailable */ }
+}
+function clearAuth() {
+  try { localStorage.removeItem("suo_auth"); } catch { /* unavailable */ }
+}
+
+async function apiFetch(baseUrl, path, { method = "GET", authToken, body, isForm = false } = {}) {
   const headers = {};
-  if (adminKey) headers["X-API-Key"] = adminKey;
+  if (authToken) headers["Authorization"] = `Token ${authToken}`;
   if (body && !isForm) headers["Content-Type"] = "application/json";
   const res = await fetch(`${baseUrl}${path}`, {
     method, headers, body: isForm ? body : (body ? JSON.stringify(body) : undefined),
@@ -97,11 +105,11 @@ function apiThresholdsToInternal(t) {
     enabled: { cpu: t.cpu_enabled, memory: t.memory_enabled, storage: t.storage_enabled },
   };
 }
-function internalThresholdsToApi(local, emailTemplate) {
+function internalThresholdsToApi(local, emailTemplate, emailTemplateDigest) {
   return {
     cpu_threshold: local.cpu, memory_threshold: local.memory, storage_threshold: local.storage,
     cpu_enabled: local.enabled.cpu, memory_enabled: local.enabled.memory, storage_enabled: local.enabled.storage,
-    rule_mode: local.mode, email_template: emailTemplate,
+    rule_mode: local.mode, email_template: emailTemplate, email_template_digest: emailTemplateDigest,
   };
 }
 
@@ -413,13 +421,11 @@ const SAMPLE_TEMPLATE_CSV = `Server Name,Application,Owner,Owner Email,Environme
 PRD-ORD-001,Order Management,Priya Nair,priya.nair@company.com,Production,14,22,18,8,32,500
 DEV-CRM-002,CRM Suite,Marcus Chen,marcus.chen@company.com,Development,63,58,44,4,16,250`;
 
-/* ---------------------------------- APP ---------------------------------- */
-export default function App() {
+/* ---------------------------------- APP (admin) ---------------------------------- */
+export default function App({ auth, onLogout }) {
   useEffect(() => { injectFonts(); }, []);
 
-  const initialApiConfig = useMemo(() => loadApiConfig(), []);
-  const [apiBaseUrl, setApiBaseUrl] = useState(initialApiConfig.baseUrl);
-  const [adminKey, setAdminKey] = useState(initialApiConfig.adminKey);
+  const [apiBaseUrl, setApiBaseUrl] = useState(() => loadApiBaseUrl());
 
   const [servers, setServers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -439,6 +445,7 @@ export default function App() {
     enabled: { cpu: true, memory: true, storage: false },
   });
   const [emailTemplate, setEmailTemplate] = useState("");
+  const [emailTemplateDigest, setEmailTemplateDigest] = useState("");
 
   // Servers view state
   const [search, setSearch] = useState("");
@@ -446,6 +453,11 @@ export default function App() {
   const [filterCompany, setFilterCompany] = useState("All");
   const [filterOwner, setFilterOwner] = useState("All");
   const [filterEnv, setFilterEnv] = useState("All");
+  const [filterAppMulti, setFilterAppMulti] = useState([]);
+  const [filterCompanyMulti, setFilterCompanyMulti] = useState([]);
+  const [filterOwnerMulti, setFilterOwnerMulti] = useState([]);
+  const [filterEnvMulti, setFilterEnvMulti] = useState([]);
+  const [filterStatusMulti, setFilterStatusMulti] = useState([]);
   const [filterStatus, setFilterStatus] = useState("All");
   const [needsReminderOnly, setNeedsReminderOnly] = useState(false);
   const [sortKey, setSortKey] = useState("cpu");
@@ -467,15 +479,16 @@ export default function App() {
   }
 
   async function fetchServers() {
-    const data = await apiFetch(apiBaseUrl, "/servers");
+    const data = await apiFetch(apiBaseUrl, "/servers", { authToken: auth.token });
     setServers(data.items.map(apiServerToInternal));
     setLastSyncedAt(new Date());
   }
 
   async function fetchThresholds() {
-    const data = await apiFetch(apiBaseUrl, "/thresholds");
+    const data = await apiFetch(apiBaseUrl, "/thresholds", { authToken: auth.token });
     setThresholds(apiThresholdsToInternal(data));
     setEmailTemplate(data.email_template);
+    setEmailTemplateDigest(data.email_template_digest);
   }
 
   async function loadAll(showSpinner = true) {
@@ -541,8 +554,8 @@ export default function App() {
   }, [withStatus]);
 
   const applicationsInData = useMemo(() => Array.from(new Set(servers.map(s => s.application))).sort(), [servers]);
-  const ownersInData = useMemo(() => Array.from(new Set(servers.map(s => s.owner))).sort(), [servers]);
   const companiesInData = useMemo(() => Array.from(new Set(servers.map(s => s.company).filter(Boolean))).sort(), [servers]);
+  const ownersInData = useMemo(() => Array.from(new Set(servers.map(s => s.owner))).sort(), [servers]);
 
 
   const filteredSorted = useMemo(() => {
@@ -552,6 +565,11 @@ export default function App() {
       if (filterCompany !== "All" && s.company !== filterCompany) return false;
       if (filterOwner !== "All" && s.owner !== filterOwner) return false;
       if (filterEnv !== "All" && s.environment !== filterEnv) return false;
+      if (filterAppMulti.length > 0 && !filterAppMulti.includes(s.application)) return false;
+      if (filterCompanyMulti.length > 0 && !filterCompanyMulti.includes(s.company)) return false;
+      if (filterOwnerMulti.length > 0 && !filterOwnerMulti.includes(s.owner)) return false;
+      if (filterEnvMulti.length > 0 && !filterEnvMulti.includes(s.environment)) return false;
+      if (filterStatusMulti.length > 0 && !filterStatusMulti.includes(s.status)) return false;
       if (filterStatus !== "All" && s.status !== filterStatus) return false;
       if (needsReminderOnly && !needsReminder(s, s.status)) return false;
       return true;
@@ -565,7 +583,11 @@ export default function App() {
       return 0;
     });
     return list;
-  }, [withStatus, search, filterApp, filterCompany, filterOwner, filterEnv, filterStatus, needsReminderOnly, sortKey, sortDir]);
+  }, [
+    withStatus, search, filterApp, filterCompany, filterOwner, filterEnv,
+    filterAppMulti, filterCompanyMulti, filterOwnerMulti, filterEnvMulti,
+    filterStatusMulti, filterStatus, needsReminderOnly, sortKey, sortDir,
+  ]);
 
   function toggleSort(key) {
     if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -576,9 +598,9 @@ export default function App() {
     setSelectedIds([]);
     try {
       if (ids.length === 1) {
-        await apiFetch(apiBaseUrl, `/reminders/server/${ids[0]}`, { method: "POST", adminKey, body: {} });
+        await apiFetch(apiBaseUrl, `/reminders/server/${ids[0]}`, { method: "POST", authToken: auth.token, body: {} });
       } else {
-        await apiFetch(apiBaseUrl, "/reminders/bulk", { method: "POST", adminKey, body: { server_ids: ids } });
+        await apiFetch(apiBaseUrl, "/reminders/bulk", { method: "POST", authToken: auth.token, body: { server_ids: ids } });
       }
       pushToast(ids.length === 1 ? "Reminder email queued" : `Reminder emails queued for ${ids.length} servers`);
       await fetchServers();
@@ -591,7 +613,7 @@ export default function App() {
     if (!portalSelectedId) return;
     try {
       await apiFetch(apiBaseUrl, `/responses/submit-dev/${portalSelectedId}`, {
-        method: "POST",
+        method: "POST", authToken: auth.token,
         body: { decision: portalResponse, comment: portalComment },
       });
       pushToast("Feedback submitted — infrastructure team notified");
@@ -609,7 +631,7 @@ export default function App() {
     try {
       const form = new FormData();
       form.append("file", file);
-      const result = await apiFetch(apiBaseUrl, "/servers/upload", { method: "POST", adminKey, body: form, isForm: true });
+      const result = await apiFetch(apiBaseUrl, "/servers/upload", { method: "POST", authToken: auth.token, body: form, isForm: true });
       pushToast(`Imported ${result.imported} servers from ${file.name}${result.skipped ? ` (${result.skipped} skipped)` : ""}`);
       setUploadOpen(false);
       await fetchServers();
@@ -647,9 +669,10 @@ export default function App() {
           </div>
         ))}
         <div className="suo-sidebar-foot">
+          Signed in as <span style={{ color: "var(--text-dim)" }}>{auth.username}</span> (admin)<br />
           API: <span className="suo-mono" style={{ color: "var(--text-dim)" }}>{apiBaseUrl}</span><br />
           {servers.length} servers loaded{lastSyncedAt ? ` · synced ${lastSyncedAt.toLocaleTimeString()}` : ""}<br /><br />
-          Connected to a live backend — changes here persist for real.
+          <a href="#" onClick={e => { e.preventDefault(); onLogout(); }} style={{ color: "var(--accent)" }}>Log out</a>
         </div>
       </aside>
 
@@ -708,6 +731,11 @@ export default function App() {
               filterCompany={filterCompany} setFilterCompany={setFilterCompany} companiesInData={companiesInData}
               filterOwner={filterOwner} setFilterOwner={setFilterOwner} ownersInData={ownersInData}
               filterEnv={filterEnv} setFilterEnv={setFilterEnv} environmentsInData={environmentsInData}
+              filterAppMulti={filterAppMulti} setFilterAppMulti={setFilterAppMulti}
+              filterCompanyMulti={filterCompanyMulti} setFilterCompanyMulti={setFilterCompanyMulti}
+              filterOwnerMulti={filterOwnerMulti} setFilterOwnerMulti={setFilterOwnerMulti}
+              filterEnvMulti={filterEnvMulti} setFilterEnvMulti={setFilterEnvMulti}
+              filterStatusMulti={filterStatusMulti} setFilterStatusMulti={setFilterStatusMulti}
               filterStatus={filterStatus} setFilterStatus={setFilterStatus}
               needsReminderOnly={needsReminderOnly} setNeedsReminderOnly={setNeedsReminderOnly}
               sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort}
@@ -728,9 +756,11 @@ export default function App() {
           {view === "settings" && (
             <SettingsView
               thresholds={thresholds} setThresholds={setThresholds} emailTemplate={emailTemplate} setEmailTemplate={setEmailTemplate}
-              pushToast={pushToast} apiBaseUrl={apiBaseUrl} setApiBaseUrl={setApiBaseUrl} adminKey={adminKey} setAdminKey={setAdminKey}
-              saveThresholdsToApi={async (local, template) => {
-                await apiFetch(apiBaseUrl, "/thresholds", { method: "PUT", adminKey, body: internalThresholdsToApi(local, template) });
+              emailTemplateDigest={emailTemplateDigest} setEmailTemplateDigest={setEmailTemplateDigest}
+              pushToast={pushToast} apiBaseUrl={apiBaseUrl} setApiBaseUrl={setApiBaseUrl}
+              auth={auth} onLogout={onLogout}
+              saveThresholdsToApi={async (local, template, templateDigest) => {
+                await apiFetch(apiBaseUrl, "/thresholds", { method: "PUT", authToken: auth.token, body: internalThresholdsToApi(local, template, templateDigest) });
                 await loadAll(false);
               }}
             />
@@ -859,11 +889,42 @@ function DashboardView({ kpis, statusPieData, envChartData, appUnderChartData, w
 }
 
 /* ---------------------------------- SERVERS VIEW ---------------------------------- */
+function MultiSelectBox({ label, options, selected, onChange }) {
+  function toggle(val) {
+    onChange(selected.includes(val) ? selected.filter(v => v !== val) : [...selected, val]);
+  }
+  return (
+    <div style={{ flex: "1 1 200px", minWidth: 180, maxWidth: 320 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+        <span style={{ fontSize: 11, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600 }}>
+          {label}{selected.length > 0 ? ` (${selected.length})` : ""}
+        </span>
+        {selected.length > 0 && (
+          <button style={{ fontSize: 10.5, color: "var(--accent)", background: "none", border: "none", cursor: "pointer", padding: 0 }} onClick={() => onChange([])}>
+            Clear
+          </button>
+        )}
+      </div>
+      <div className="suo-scrollbar" style={{ height: 130, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 7, background: "var(--surface-2)", padding: "6px 8px" }}>
+        {options.length === 0 ? (
+          <div style={{ fontSize: 11.5, color: "var(--text-faint)", padding: "6px 2px" }}>No values</div>
+        ) : options.map(opt => (
+          <label key={opt} style={{ display: "flex", alignItems: "center", gap: 7, padding: "3px 2px", fontSize: 12, color: "var(--text)", cursor: "pointer" }}>
+            <input type="checkbox" checked={selected.includes(opt)} onChange={() => toggle(opt)} style={{ accentColor: "var(--accent)", flexShrink: 0 }} />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{opt}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
 function ServersView(props) {
   const {
     filteredSorted, search, setSearch, filterApp, setFilterApp, applicationsInData,
-    filterOwner, setFilterOwner, ownersInData, filterEnv, setFilterEnv, environmentsInData,
-    filterCompany, setFilterCompany, companiesInData,
+    filterCompany, setFilterCompany, companiesInData, filterOwner, setFilterOwner, ownersInData,
+    filterEnv, setFilterEnv, environmentsInData, filterAppMulti, setFilterAppMulti,
+    filterCompanyMulti, setFilterCompanyMulti, filterOwnerMulti, setFilterOwnerMulti,
+    filterEnvMulti, setFilterEnvMulti, filterStatusMulti, setFilterStatusMulti,
     filterStatus, setFilterStatus, needsReminderOnly, setNeedsReminderOnly,
     sortKey, sortDir, toggleSort, selectedIds, setSelectedIds, setModalServer, sendReminder,
   } = props;
@@ -933,7 +994,15 @@ function ServersView(props) {
           </button>
         )}
       </div>
-
+      <div className="suo-card" style={{ display: "flex", flexWrap: "wrap", gap: 18 }}>
+        <MultiSelectBox label="Applications" options={applicationsInData} selected={filterAppMulti} onChange={setFilterAppMulti} />
+        {companiesInData.length > 0 && (
+            <MultiSelectBox label="Companies" options={companiesInData} selected={filterCompanyMulti} onChange={setFilterCompanyMulti} />
+        )}
+        <MultiSelectBox label="Owners" options={ownersInData} selected={filterOwnerMulti} onChange={setFilterOwnerMulti} />
+        <MultiSelectBox label="Environments" options={environmentsInData} selected={filterEnvMulti} onChange={setFilterEnvMulti} />
+        <MultiSelectBox label="Statuses" options={["Underutilized", "Optimal", "Overutilized"]} selected={filterStatusMulti} onChange={setFilterStatusMulti} />
+      </div>
       <div className="suo-table-wrap">
         <div style={{ maxHeight: "calc(100vh - 260px)", overflowY: "auto" }} className="suo-scrollbar">
           <table className="suo-table">
@@ -1074,29 +1143,66 @@ function ServerModal({ server, onClose, sendReminder, emailTemplate }) {
 
 /* ---------------------------------- OWNER PORTAL VIEW ---------------------------------- */
 function OwnerPortalView({ servers, portalSelectedId, setPortalSelectedId, portalResponse, setPortalResponse, portalComment, setPortalComment, portalServer, submitOwnerFeedback }) {
+  const reminded = servers.filter(s => s.remindersSent > 0);
   return (
-    <div style={{ maxWidth: 640, display: "flex", flexDirection: "column", gap: 16 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div className="suo-card">
-        <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 10 }}>
-          This simulates the simplified access an application owner would use — no infrastructure login required. Select the server you were reminded about.
+        <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+          This simulates the simplified access an application owner would use — no infrastructure login required. Pick the server you were reminded about from the table below.
         </div>
-        <select className="suo-select" style={{ width: "100%" }} value={portalSelectedId} onChange={e => setPortalSelectedId(e.target.value)}>
-          <option value="">Select a server…</option>
-          {servers.filter(s => s.remindersSent > 0).map(s => (
-            <option key={s.id} value={s.id}>{s.name} — {s.application} ({s.owner})</option>
-          ))}
-        </select>
+      </div>
+
+      <div className="suo-table-wrap">
+        <div style={{ maxHeight: 320, overflowY: "auto" }} className="suo-scrollbar">
+          <table className="suo-table">
+            <thead>
+              <tr>
+                <th>Server</th>
+                <th>Application</th>
+                <th>Owner</th>
+                <th>Environment</th>
+                <th>CPU</th>
+                <th>Memory</th>
+                <th>Storage</th>
+                <th>Status</th>
+                <th>Reminders</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reminded.map(s => (
+                <tr
+                  key={s.id}
+                  className={`suo-row ${String(s.id) === String(portalSelectedId) ? "selected" : ""}`}
+                  onClick={() => setPortalSelectedId(String(s.id))}
+                >
+                  <td className="suo-mono" style={{ fontWeight: 600 }}>{s.name}</td>
+                  <td>{s.application}</td>
+                  <td>{s.owner}</td>
+                  <td><span className="suo-chip">{s.environment}</span></td>
+                  <td><LedGauge value={s.cpu} status={s.status} /></td>
+                  <td><LedGauge value={s.memory} status={s.status} /></td>
+                  <td><LedGauge value={s.storage} status={s.status} /></td>
+                  <td><StatusBadge status={s.status} /></td>
+                  <td className="suo-mono">{s.remindersSent}</td>
+                </tr>
+              ))}
+              {reminded.length === 0 && (
+                <tr><td colSpan={9} style={{ textAlign: "center", padding: 30, color: "var(--text-faint)" }}>No servers have been reminded yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {portalServer && (
         <>
           <div className="suo-card">
-            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Current utilization</div>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Current utilization — {portalServer.name}</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
               {[["CPU", portalServer.cpu], ["Memory", portalServer.memory], ["Storage", portalServer.storage]].map(([label, val]) => (
                 <div key={label}>
                   <div style={{ fontSize: 11, color: "var(--text-faint)" }}>{label}</div>
-                  <div className="suo-mono" style={{ fontSize: 18, fontWeight: 700, margin: "4px 0" }}>{val}%</div>
+                  <div className="suo-mono" style={{ fontSize: 18, fontWeight: 700, margin: "4px 0" }}>{val != null ? `${val}%` : "—"}</div>
                   <LedGauge value={val} status={portalServer.status} />
                 </div>
               ))}
@@ -1142,15 +1248,16 @@ function OwnerPortalView({ servers, portalSelectedId, setPortalSelectedId, porta
 }
 
 /* ---------------------------------- SETTINGS VIEW ---------------------------------- */
-function SettingsView({ thresholds, setThresholds, emailTemplate, setEmailTemplate, pushToast, apiBaseUrl, setApiBaseUrl, adminKey, setAdminKey, saveThresholdsToApi }) {
+function SettingsView({ thresholds, setThresholds, emailTemplate, setEmailTemplate, emailTemplateDigest, setEmailTemplateDigest, pushToast, apiBaseUrl, setApiBaseUrl, auth, onLogout, saveThresholdsToApi }) {
   const [local, setLocal] = useState(thresholds);
   const [templateDraft, setTemplateDraft] = useState(emailTemplate);
+  const [templateDigestDraft, setTemplateDigestDraft] = useState(emailTemplateDigest);
   const [urlDraft, setUrlDraft] = useState(apiBaseUrl);
-  const [keyDraft, setKeyDraft] = useState(adminKey);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => { setLocal(thresholds); }, [thresholds]);
   useEffect(() => { setTemplateDraft(emailTemplate); }, [emailTemplate]);
+  useEffect(() => { setTemplateDigestDraft(emailTemplateDigest); }, [emailTemplateDigest]);
 
   function update(field, value) { setLocal(prev => ({ ...prev, [field]: value })); }
   function updateEnabled(field, value) { setLocal(prev => ({ ...prev, enabled: { ...prev.enabled, [field]: value } })); }
@@ -1158,7 +1265,7 @@ function SettingsView({ thresholds, setThresholds, emailTemplate, setEmailTempla
   async function save() {
     setSaving(true);
     try {
-      await saveThresholdsToApi(local, templateDraft);
+      await saveThresholdsToApi(local, templateDraft, templateDigestDraft);
       pushToast("Settings saved");
     } catch (err) {
       pushToast(`Couldn't save settings: ${err.message}`);
@@ -1168,25 +1275,28 @@ function SettingsView({ thresholds, setThresholds, emailTemplate, setEmailTempla
   }
 
   function connect() {
-    saveApiConfig(urlDraft, keyDraft);
+    saveApiBaseUrl(urlDraft);
     setApiBaseUrl(urlDraft);
-    setAdminKey(keyDraft);
-    pushToast("API connection updated");
+    pushToast("API connection updated — reloading data");
   }
 
   return (
     <div style={{ maxWidth: 640, display: "flex", flexDirection: "column", gap: 16 }}>
       <div className="suo-card">
+        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Account</div>
+        <div style={{ fontSize: 12.5, color: "var(--text-dim)", marginBottom: 10 }}>
+          Signed in as <strong>{auth.username}</strong> ({auth.email || "no email on file"}) — Admin
+        </div>
+        <button className="suo-btn suo-btn-sm" onClick={onLogout}>Log out</button>
+      </div>
+
+      <div className="suo-card">
         <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>API connection</div>
-        <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginBottom: 14 }}>Points at the Django backend from this same project (default port 8000). The admin key gates upload/reminder/threshold changes.</div>
+        <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginBottom: 14 }}>Points at the Django backend from this same project (default port 8000). Only useful to change if you're running the backend somewhere else, e.g. via the Vite dev server proxy.</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div>
             <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginBottom: 4 }}>API base URL</div>
             <input className="suo-input" style={{ width: "100%" }} value={urlDraft} onChange={e => setUrlDraft(e.target.value)} placeholder="http://localhost:8000/api" />
-          </div>
-          <div>
-            <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginBottom: 4 }}>Admin API key (X-API-Key)</div>
-            <input className="suo-input" style={{ width: "100%" }} value={keyDraft} onChange={e => setKeyDraft(e.target.value)} type="password" />
           </div>
           <div><button className="suo-btn suo-btn-sm" onClick={connect}>Update connection</button></div>
         </div>
@@ -1222,9 +1332,18 @@ function SettingsView({ thresholds, setThresholds, emailTemplate, setEmailTempla
       </div>
 
       <div className="suo-card">
-        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Reminder email template</div>
-        <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginBottom: 10 }}>Placeholders: {"{owner} {server} {application} {environment} {cpu} {memory} {response_link}"}</div>
-        <textarea className="suo-input" style={{ width: "100%", minHeight: 140, fontFamily: "var(--mono)", fontSize: 12, resize: "vertical" }} value={templateDraft} onChange={e => setTemplateDraft(e.target.value)} />
+        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Reminder email template — single server</div>
+        <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginBottom: 10 }}>Used when a reminder covers just one server. Placeholders: {"{owner} {server} {application} {environment} {cpu} {memory} {response_link}"}</div>
+        <textarea className="suo-input" style={{ width: "100%", minHeight: 130, fontFamily: "var(--mono)", fontSize: 12, resize: "vertical" }} value={templateDraft} onChange={e => setTemplateDraft(e.target.value)} />
+      </div>
+
+      <div className="suo-card">
+        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Reminder email template — multiple servers (digest)</div>
+        <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginBottom: 10 }}>
+          Used automatically when a bulk reminder covers 2+ servers owned by the same person — they get ONE consolidated
+          email instead of one per server. Placeholders: {"{owner} {count} {server_list} {response_link}"} — {"{server_list}"} is pre-formatted, one line per server.
+        </div>
+        <textarea className="suo-input" style={{ width: "100%", minHeight: 130, fontFamily: "var(--mono)", fontSize: 12, resize: "vertical" }} value={templateDigestDraft} onChange={e => setTemplateDigestDraft(e.target.value)} />
       </div>
 
       <div>
@@ -1276,23 +1395,99 @@ function UploadModal({ onClose, dragActive, setDragActive, handleFiles, fileInpu
   );
 }
 
+/* ---------------------------------- LOGIN PAGE ---------------------------------- */
+// Shared login for both roles — the backend (views.login_view) decides admin vs
+// owner from the account's is_staff flag and returns it as `role`; this page just
+// routes to the right place afterward via onLoggedIn. No separate "admin login" vs
+// "owner login" screens — one form, one endpoint, role decided server-side.
+function LoginPage({ onLoggedIn }) {
+  useEffect(() => { injectFonts(); }, []);
+  const [apiBaseUrl, setApiBaseUrlLocal] = useState(() => loadApiBaseUrl());
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setSubmitting(true);
+    setError("");
+    try {
+      saveApiBaseUrl(apiBaseUrl);
+      const data = await apiFetch(apiBaseUrl, "/auth/login", { method: "POST", body: { username, password } });
+      const auth = { token: data.token, username: data.username, email: data.email, role: data.role };
+      saveAuth(auth);
+      onLoggedIn(auth);
+    } catch (err) {
+      setError((err.message || "").replace(/^\d+\s*/, "") || "Couldn't log in — please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="suo-root" style={{ alignItems: "center", justifyContent: "center" }}>
+      <GlobalStyle />
+      <div style={{ width: "100%", maxWidth: 380 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 24, justifyContent: "center" }}>
+          <div className="suo-brand-mark" />
+          <div>
+            <div className="suo-brand-text">RightSize</div>
+            <div className="suo-brand-sub">infra utilization</div>
+          </div>
+        </div>
+        <form className="suo-card" onSubmit={submit}>
+          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 14 }}>Sign in</div>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginBottom: 4 }}>Username</div>
+            <input className="suo-input" style={{ width: "100%" }} value={username} onChange={e => setUsername(e.target.value)} autoFocus />
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginBottom: 4 }}>Password</div>
+            <input className="suo-input" style={{ width: "100%" }} type="password" value={password} onChange={e => setPassword(e.target.value)} />
+          </div>
+          {error && <div style={{ color: "var(--crit)", fontSize: 12, marginBottom: 10 }}>{error}</div>}
+          <button className="suo-btn suo-btn-primary" style={{ width: "100%" }} type="submit" disabled={submitting}>
+            {submitting ? "Signing in…" : "Sign in"}
+          </button>
+
+          <div style={{ marginTop: 14, textAlign: "center" }}>
+            <a href="#" style={{ fontSize: 11, color: "var(--text-faint)" }} onClick={e => { e.preventDefault(); setShowAdvanced(v => !v); }}>
+              {showAdvanced ? "Hide" : "Connecting to a different backend?"}
+            </a>
+          </div>
+          {showAdvanced && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginBottom: 4 }}>API base URL</div>
+              <input className="suo-input" style={{ width: "100%" }} value={apiBaseUrl} onChange={e => setApiBaseUrlLocal(e.target.value)} placeholder="http://localhost:8000/api" />
+            </div>
+          )}
+        </form>
+        <div style={{ textAlign: "center", fontSize: 11, color: "var(--text-faint)", marginTop: 14 }}>
+          Admin accounts and application-owner accounts both sign in here — what you see next depends on the account.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------------------------- OWNER RESPONSE PAGE (real, token-based flow) ---------------------------------- */
-// Standalone page — no sidebar, no admin key, no other tabs. This is what an
-// application owner actually lands on from the link in a reminder email
-// (build_response_link() in servers_app/security.py), not the dev-mode dropdown
-// under the main app's "Owner Portal" tab. Mounted directly by main.jsx when the URL
-// path is /owner-response, bypassing <App/> entirely — see main.jsx for the routing.
+// Standalone, no-login page for the emailed reminder link. A token now covers ONE OR
+// SEVERAL servers (a digest reminder groups multiple servers into one email) — this
+// renders every server the token grants access to, each with its own decision, and
+// submits them all together. See build_response_link()/verify_owner_link_token() in
+// servers_app/security.py for how the token itself works.
 export function OwnerResponsePage() {
   useEffect(() => { injectFonts(); }, []);
 
   const token = useMemo(() => new URLSearchParams(window.location.search).get("token"), []);
-  const apiBaseUrl = useMemo(() => loadApiConfig().baseUrl, []);
+  const apiBaseUrl = useMemo(() => loadApiBaseUrl(), []);
 
   const [status, setStatus] = useState("loading"); // loading | error | ready | submitted
   const [errorMessage, setErrorMessage] = useState("");
-  const [server, setServer] = useState(null);
-  const [decision, setDecision] = useState("keep");
-  const [comment, setComment] = useState("");
+  const [servers, setServers] = useState([]);
+  const [answers, setAnswers] = useState({}); // { [serverId]: { decision, comment } }
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
 
@@ -1305,7 +1500,11 @@ export function OwnerResponsePage() {
     (async () => {
       try {
         const data = await apiFetch(apiBaseUrl, `/responses/lookup?token=${encodeURIComponent(token)}`);
-        setServer(apiServerToInternal(data));
+        const mapped = (data.items || []).map(apiServerToInternal);
+        setServers(mapped);
+        const initialAnswers = {};
+        mapped.forEach(s => { initialAnswers[s.id] = { decision: s.ownerResponse || "keep", comment: "" }; });
+        setAnswers(initialAnswers);
         setStatus("ready");
       } catch (err) {
         setStatus("error");
@@ -1314,12 +1513,19 @@ export function OwnerResponsePage() {
     })();
   }, [token, apiBaseUrl]);
 
+  function setAnswer(serverId, field, value) {
+    setAnswers(prev => ({ ...prev, [serverId]: { ...prev[serverId], [field]: value } }));
+  }
+
   async function submit() {
     setSubmitting(true);
     setSubmitError("");
     try {
+      const responses = servers.map(s => ({
+        server_id: s.id, decision: answers[s.id]?.decision || "keep", comment: answers[s.id]?.comment || "",
+      }));
       await apiFetch(apiBaseUrl, `/responses/submit?token=${encodeURIComponent(token)}`, {
-        method: "POST", body: { decision, comment },
+        method: "POST", body: { responses },
       });
       setStatus("submitted");
     } catch (err) {
@@ -1332,7 +1538,7 @@ export function OwnerResponsePage() {
   return (
     <div className="suo-root" style={{ alignItems: "flex-start", justifyContent: "center", padding: "40px 20px" }}>
       <GlobalStyle />
-      <div style={{ width: "100%", maxWidth: 560 }}>
+      <div style={{ width: "100%", maxWidth: 620 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 24 }}>
           <div className="suo-brand-mark" />
           <div>
@@ -1358,56 +1564,316 @@ export function OwnerResponsePage() {
           <div className="suo-card" style={{ textAlign: "center", padding: "36px 20px" }}>
             <CheckCircle2 size={28} style={{ color: "var(--ok)", marginBottom: 12 }} />
             <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>Thanks — feedback submitted</div>
-            <div style={{ fontSize: 12.5, color: "var(--text-dim)" }}>The infrastructure team has been notified. You can close this page.</div>
+            <div style={{ fontSize: 12.5, color: "var(--text-dim)" }}>The infrastructure team has been notified for all {servers.length} server{servers.length === 1 ? "" : "s"}. You can close this page.</div>
           </div>
         )}
 
-        {status === "ready" && server && (
+        {status === "ready" && servers.length > 0 && (
           <>
-            <div className="suo-card">
-              <div className="suo-mono" style={{ fontSize: 15, fontWeight: 700 }}>{server.name}</div>
-              <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
-                {server.application} · {server.environment} · {server.owner}{server.company ? ` · ${server.company}` : ""}
+            {servers.length > 1 && (
+              <div className="suo-card" style={{ marginBottom: 4, background: "var(--surface-2)" }}>
+                <div style={{ fontSize: 12.5, color: "var(--text-dim)" }}>
+                  {servers.length} of your servers are flagged for review. Set a response for each one below, then submit once at the bottom.
+                </div>
               </div>
-              <div className="suo-divider" />
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Current utilization</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                {[["CPU", server.cpu], ["Memory", server.memory], ["Storage", server.storage]].map(([label, val]) => (
-                  <div key={label}>
-                    <div style={{ fontSize: 11, color: "var(--text-faint)" }}>{label}</div>
-                    <div className="suo-mono" style={{ fontSize: 18, fontWeight: 700, margin: "4px 0" }}>{val != null ? `${val}%` : "—"}</div>
-                    <LedGauge value={val} status={server.status} />
-                  </div>
-                ))}
-              </div>
-            </div>
+            )}
 
-            <div className="suo-card">
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 12 }}>Is this allocation still needed?</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {Object.entries(RESPONSE_LABELS).map(([key, label]) => (
-                  <label key={key} className={`suo-radio-card ${decision === key ? "active" : ""}`}>
-                    <input type="radio" name="resp" checked={decision === key} onChange={() => setDecision(key)} />
-                    <div style={{ fontWeight: 600, fontSize: 12.5 }}>{label}</div>
-                  </label>
-                ))}
+            {servers.map(server => (
+              <div key={server.id} className="suo-card">
+                <div className="suo-mono" style={{ fontSize: 14, fontWeight: 700 }}>{server.name}</div>
+                <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+                  {server.application} · {server.environment}{server.company ? ` · ${server.company}` : ""}
+                </div>
+                {(server.description || server.os) && (
+                  <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 3 }}>
+                    {server.description}{server.description && server.os ? " · " : ""}{server.os ? `OS: ${server.os}` : ""}
+                  </div>
+                )}
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 14, marginBottom: 14 }}>
+                  {[["CPU", server.cpu], ["Memory", server.memory], ["Storage", server.storage]].map(([label, val]) => (
+                    <div key={label}>
+                      <div style={{ fontSize: 11, color: "var(--text-faint)" }}>{label}</div>
+                      <div className="suo-mono" style={{ fontSize: 16, fontWeight: 700, margin: "4px 0" }}>{val != null ? `${val}%` : "—"}</div>
+                      <LedGauge value={val} status={server.status} />
+                    </div>
+                  ))}
+                </div>
+
+                {server.ownerResponded && (
+                  <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginBottom: 10 }}>
+                    You previously said: <strong>{RESPONSE_LABELS[server.ownerResponse]}</strong>. Submitting again below will record a new response.
+                  </div>
+                )}
+
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {Object.entries(RESPONSE_LABELS).map(([key, label]) => (
+                    <label key={key} className={`suo-radio-card ${(answers[server.id]?.decision) === key ? "active" : ""}`}>
+                      <input type="radio" name={`resp-${server.id}`} checked={(answers[server.id]?.decision) === key} onChange={() => setAnswer(server.id, "decision", key)} />
+                      <div style={{ fontWeight: 600, fontSize: 12.5 }}>{label}</div>
+                    </label>
+                  ))}
+                </div>
+                <div style={{ marginTop: 10 }}>
+                  <textarea
+                    className="suo-input" style={{ width: "100%", minHeight: 60, resize: "vertical", fontFamily: "var(--sans)" }}
+                    value={answers[server.id]?.comment || ""} onChange={e => setAnswer(server.id, "comment", e.target.value)}
+                    placeholder="Optional comment or justification…"
+                  />
+                </div>
               </div>
-              <div style={{ marginTop: 14 }}>
-                <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginBottom: 6 }}>Additional comments or justification</div>
-                <textarea
-                  className="suo-input" style={{ width: "100%", minHeight: 80, resize: "vertical", fontFamily: "var(--sans)" }}
-                  value={comment} onChange={e => setComment(e.target.value)}
-                  placeholder="e.g. This server supports a scheduled monthly job outside business hours…"
-                />
-              </div>
-              {submitError && <div style={{ color: "var(--crit)", fontSize: 12, marginTop: 10 }}>{submitError}</div>}
-              <button className="suo-btn suo-btn-primary" style={{ marginTop: 12 }} onClick={submit} disabled={submitting}>
-                {submitting ? "Submitting…" : "Submit feedback"}
-              </button>
-            </div>
+            ))}
+
+            {submitError && <div style={{ color: "var(--crit)", fontSize: 12, marginBottom: 10 }}>{submitError}</div>}
+            <button className="suo-btn suo-btn-primary" style={{ width: "100%" }} onClick={submit} disabled={submitting}>
+              {submitting ? "Submitting…" : servers.length > 1 ? `Submit all ${servers.length} responses` : "Submit feedback"}
+            </button>
           </>
         )}
       </div>
     </div>
   );
+}
+
+/* ---------------------------------- OWNER DASHBOARD (real login, "My Servers") ---------------------------------- */
+// The logged-in-owner counterpart to the admin App — a self-contained "window" onto
+// just this owner's own servers (matched server-side by Server.owner_email ==
+// account email, see views.my_servers_view), where they can see everything about a
+// server (same depth as the admin's server detail modal) and respond, without ever
+// needing an emailed link. Coexists with OwnerResponsePage above rather than
+// replacing it — some owners will prefer the one-click emailed link, others will
+// want to log in and check on their servers proactively.
+function OwnerDashboard({ auth, onLogout }) {
+  useEffect(() => { injectFonts(); }, []);
+  const [apiBaseUrl] = useState(() => loadApiBaseUrl());
+  const [servers, setServers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+  const [expandedId, setExpandedId] = useState(null);
+  const [answers, setAnswers] = useState({});
+  const [submittingId, setSubmittingId] = useState(null);
+  const [toasts, setToasts] = useState([]);
+
+  function pushToast(msg) {
+    const id = Math.random().toString(36).slice(2);
+    setToasts(t => [...t, { id, msg }]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3600);
+  }
+
+  async function load() {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const data = await apiFetch(apiBaseUrl, "/my/servers", { authToken: auth.token });
+      setServers((data.items || []).map(apiServerToInternal));
+    } catch (err) {
+      setLoadError(err.message || "Could not load your servers");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  function toggleExpand(server) {
+    setExpandedId(prev => prev === server.id ? null : server.id);
+    setAnswers(prev => ({ ...prev, [server.id]: prev[server.id] || { decision: server.ownerResponse || "keep", comment: "" } }));
+  }
+
+  function setAnswer(serverId, field, value) {
+    setAnswers(prev => ({ ...prev, [serverId]: { ...prev[serverId], [field]: value } }));
+  }
+
+  async function respond(server) {
+    setSubmittingId(server.id);
+    try {
+      const a = answers[server.id] || { decision: "keep", comment: "" };
+      await apiFetch(apiBaseUrl, `/my/servers/${server.id}/respond`, {
+        method: "POST", authToken: auth.token, body: { decision: a.decision, comment: a.comment },
+      });
+      pushToast(`Response recorded for ${server.name}`);
+      await load();
+    } catch (err) {
+      pushToast(`Couldn't submit: ${err.message}`);
+    } finally {
+      setSubmittingId(null);
+    }
+  }
+
+  const needingResponse = servers.filter(s => s.status === "Underutilized" && !s.ownerResponded);
+  const respondedCount = servers.filter(s => s.ownerResponded).length;
+  // Needs-response servers surface first, then everything else — so the most
+  // actionable items aren't buried below a long list of already-fine servers.
+  const sortedServers = [...servers].sort((a, b) => {
+      const aPriority = a.status === "Underutilized" && !a.ownerResponded ? 0 : 1;
+      const bPriority = b.status === "Underutilized" && !b.ownerResponded ? 0 : 1;
+      return aPriority - bPriority;
+  });
+
+  return (
+    <div className="suo-root" style={{ alignItems: "flex-start", justifyContent: "center", padding: "32px 20px" }}>
+      <GlobalStyle />
+      <div style={{ width: "100%", maxWidth: 760 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div className="suo-brand-mark" />
+            <div>
+              <div className="suo-brand-text">RightSize</div>
+              <div className="suo-brand-sub">my servers</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{auth.username}{auth.email ? ` · ${auth.email}` : ""}</span>
+            <button className="suo-btn suo-btn-sm" onClick={onLogout}>Log out</button>
+          </div>
+        </div>
+
+        {loading && (
+          <div style={{ textAlign: "center", padding: "60px 0", color: "var(--text-faint)" }}>Loading your servers…</div>
+        )}
+
+        {!loading && loadError && (
+          <div className="suo-card" style={{ borderColor: "var(--crit-dim)", color: "var(--crit)" }}>
+            Couldn't load your servers — {loadError}
+          </div>
+        )}
+
+        {!loading && !loadError && servers.length === 0 && (
+          <div className="suo-card" style={{ textAlign: "center", color: "var(--text-dim)", padding: "40px 20px" }}>
+            No servers are associated with your account email ({auth.email || "none on file"}). If this looks wrong, check with infrastructure ops that your account email matches the owner email on your servers.
+          </div>
+        )}
+
+        {!loading && !loadError && servers.length > 0 && (
+          <>
+            <div className="suo-kpi-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+              <div className="suo-card">
+                <div className="suo-kpi-label">Total Servers</div>
+                <div className="suo-kpi-value">{servers.length}</div>
+              </div>
+              <div className="suo-card" style={{ borderColor: needingResponse.length > 0 ? "var(--warn-dim)" : undefined }}>
+                <div className="suo-kpi-label" style={{ color: needingResponse.length > 0 ? "var(--warn)" : undefined }}>Needs Your Response</div>
+                <div className="suo-kpi-value" style={{ color: needingResponse.length > 0 ? "var(--warn)" : undefined }}>{needingResponse.length}</div>
+              </div>
+              <div className="suo-card">
+                <div className="suo-kpi-label">Responded</div>
+                <div className="suo-kpi-value">{respondedCount}</div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {sortedServers.map(server => {
+                const needsAttention = server.status === "Underutilized" && !server.ownerResponded;
+                return (
+                <div key={server.id} className="suo-card" style={{ cursor: "pointer", borderLeft: needsAttention ? "3px solid var(--warn)" : undefined }}>
+                  <div onClick={() => toggleExpand(server)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div>
+                      <div className="suo-mono" style={{ fontSize: 13, fontWeight: 700 }}>{server.name}</div>
+                      <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginTop: 2 }}>{server.application} · {server.environment}</div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <StatusBadge status={server.status} />
+                      {expandedId === server.id ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                    </div>
+                  </div>
+
+                  {expandedId === server.id && (
+                    <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+                      {(server.description || server.os || server.company) && (
+                        <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginBottom: 14 }}>
+                          {server.company ? `${server.company} · ` : ""}{server.description}{server.description && server.os ? " · " : ""}{server.os ? `OS: ${server.os}` : ""}
+                        </div>
+                      )}
+
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
+                        {[
+                          { label: "CPU", value: server.cpu, alloc: `${server.cpuAllocated ?? "—"} vCPU allocated` },
+                          { label: "Memory", value: server.memory, alloc: `${server.memAllocated ?? "—"} GB allocated` },
+                          { label: "Storage", value: server.storage, alloc: server.storageAllocated != null ? `${server.storageAllocated} GB allocated` : "Not tracked" },
+                        ].map(m => (
+                          <div key={m.label} className="suo-card" style={{ padding: 10 }}>
+                            <div style={{ fontSize: 10.5, color: "var(--text-faint)", textTransform: "uppercase" }}>{m.label}</div>
+                            <div className="suo-mono" style={{ fontSize: 17, fontWeight: 700, margin: "5px 0" }}>{m.value != null ? `${m.value}%` : "—"}</div>
+                            <LedGauge value={m.value} status={server.status} />
+                            <div style={{ fontSize: 10, color: "var(--text-faint)", marginTop: 6 }}>{m.alloc}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginBottom: 12 }}>
+                        {server.remindersSent} reminder{server.remindersSent === 1 ? "" : "s"} sent
+                        {server.lastReminderDate ? ` · last ${fmtDate(server.lastReminderDate)}` : ""}
+                        {server.ownerResponded ? " · you've responded" : ""}
+                      </div>
+
+                      {server.comments.length > 0 && (
+                        <div style={{ marginBottom: 14 }}>
+                          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><MessageSquare size={13} /> Previous responses</div>
+                          {server.comments.map((c, i) => (
+                            <div key={i} style={{ background: "var(--surface-2)", borderRadius: 8, padding: 10, marginBottom: 6 }}>
+                              <div style={{ fontSize: 11, color: "var(--text-faint)" }}>{fmtDate(c.date)}</div>
+                              <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 3 }}>{c.text}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 8 }}>Is this allocation still needed?</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {Object.entries(RESPONSE_LABELS).map(([key, label]) => (
+                          <label key={key} className={`suo-radio-card ${(answers[server.id]?.decision) === key ? "active" : ""}`} onClick={e => e.stopPropagation()}>
+                            <input type="radio" name={`myresp-${server.id}`} checked={(answers[server.id]?.decision) === key} onChange={() => setAnswer(server.id, "decision", key)} />
+                            <div style={{ fontWeight: 600, fontSize: 12 }}>{label}</div>
+                          </label>
+                        ))}
+                      </div>
+                      <textarea
+                        className="suo-input" style={{ width: "100%", minHeight: 56, resize: "vertical", fontFamily: "var(--sans)", marginTop: 8 }}
+                        value={answers[server.id]?.comment || ""} onChange={e => setAnswer(server.id, "comment", e.target.value)}
+                        onClick={e => e.stopPropagation()}
+                        placeholder="Optional comment or justification…"
+                      />
+                      <button
+                        className="suo-btn suo-btn-primary suo-btn-sm" style={{ marginTop: 10 }}
+                        onClick={e => { e.stopPropagation(); respond(server); }} disabled={submittingId === server.id}
+                      >
+                        {submittingId === server.id ? "Submitting…" : "Submit response"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );})}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="suo-toast-wrap">
+        {toasts.map(t => <div key={t.id} className="suo-toast">{t.msg}</div>)}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------- ROOT ROUTER ---------------------------------- */
+// No routing library — three possible top-level pages, decided by plain path/state
+// checks. main.jsx just renders <Root/>; everything else happens here.
+export function Root() {
+  const isOwnerResponsePage = window.location.pathname.replace(/\/+$/, "") === "/owner-response";
+  if (isOwnerResponsePage) return <OwnerResponsePage />;
+
+  const [auth, setAuth] = useState(() => loadAuth());
+
+  async function handleLogout() {
+    try {
+      const apiBaseUrl = loadApiBaseUrl();
+      if (auth?.token) await apiFetch(apiBaseUrl, "/auth/logout", { method: "POST", authToken: auth.token });
+    } catch { /* token may already be invalid — clear local state regardless */ }
+    clearAuth();
+    setAuth(null);
+  }
+
+  if (!auth) return <LoginPage onLoggedIn={setAuth} />;
+  if (auth.role === "owner") return <OwnerDashboard auth={auth} onLogout={handleLogout} />;
+  return <App auth={auth} onLogout={handleLogout} />;
 }

@@ -19,6 +19,12 @@ class ThresholdConfig(models.Model):
         "efficiency threshold, could you confirm whether the current allocation is still "
         "required?\n\nYou can respond here: {response_link}\n\nThanks,\nInfrastructure Operations"
     ))
+    email_template_digest = models.TextField(default=(
+        "Hi {owner},\n\nOur records show {count} of your servers are running below our "
+        "efficiency threshold:\n\n{server_list}\n\nCould you confirm whether each allocation "
+        "is still required? You can review and respond to all of them here:\n{response_link}"
+        "\n\nThanks,\nInfrastructure Operations"
+    ))
     updated_at = models.DateTimeField(auto_now=True)
 
     @classmethod
@@ -31,8 +37,7 @@ class Server(models.Model):
     name = models.CharField(max_length=255, db_index=True)
     application = models.CharField(max_length=255, default="Unassigned")
     owner = models.CharField(max_length=255, default="Unassigned")
-    # owner_email = models.EmailField(default="unknown@company.com")
-    owner_email = models.EmailField(default="surajsgupta0107@gmail.com")
+    owner_email = models.EmailField(default="unknown@company.com")
     company = models.CharField(max_length=255, null=True, blank=True)
     description = models.TextField(null=True, blank=True)
     os = models.CharField(max_length=255, null=True, blank=True)
@@ -89,7 +94,7 @@ class Server(models.Model):
         last = self.reminders.order_by("-sent_at").first()
         if not last:
             return True
-        return (dt.datetime.now(dt.timezone.utc) - last.sent_at).days > 30  # add it as attribute as remainder_interval
+        return (dt.datetime.now(dt.timezone.utc) - last.sent_at).days > 30
 
 
 class UtilizationSnapshot(models.Model):
@@ -107,6 +112,11 @@ class Reminder(models.Model):
     sent_at = models.DateTimeField(auto_now_add=True)
     sent_by = models.CharField(max_length=255, null=True, blank=True)
     template_version = models.CharField(max_length=50, default="v1")
+    # Set when this reminder was part of a single consolidated email covering several
+    # servers for the same owner (see servers_app/tasks.py's send_reminder_digest_email).
+    # Every Reminder row from that one email shares this same value, so "how many separate
+    # emails has this owner received" and "how many servers were flagged" stay distinguishable.
+    digest_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
 
 
 class Response(models.Model):

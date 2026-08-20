@@ -34,11 +34,25 @@ Django backend is actually running on port 8000 first.
 > Vite config was checked the same way, but please run it for real and report back
 > anything that doesn't come up clean.
 
-## Pointing it at a different backend
+## Signing in / pointing at a different backend
 
-Go to **Settings → API connection** in the app itself to override the API base URL and
-admin key at runtime — saved to `localStorage`, so it persists across reloads. Useful
-if you're running the backend somewhere other than `localhost:8000`.
+There's no in-app admin key field anymore — log in with a real account (see the
+project root README's "Accounts, roles, and how login works"). The login screen has a
+collapsed "Connecting to a different backend?" link if you need to override the API
+base URL — useful if you're running the backend somewhere other than `localhost:8000`.
+Whatever you log in with is saved to `localStorage` (the auth token, not the password)
+so a reload doesn't force logging in again; "Log out" (visible in the admin sidebar or
+the My Servers header) clears it.
+
+## Three pages, decided by `Root` in `ServerUtilizationApp.jsx`
+
+- **`/owner-response?token=...`** — no login. Renders `OwnerResponsePage` directly, bypassing everything else.
+- **Not logged in, anywhere else** — `LoginPage`.
+- **Logged in, `role: "admin"`** — the full dashboard app (`App`).
+- **Logged in, `role: "owner"`** — `OwnerDashboard`, a separate "My Servers" view scoped to that account's own servers.
+
+`main.jsx` itself just mounts `<Root />` — all of the above routing logic lives inside
+that one component.
 
 ## What changed from the original chat-artifact prototype
 
@@ -48,10 +62,14 @@ if you're running the backend somewhere other than `localhost:8000`.
   the column-mapping and parsing (same flexible-matching logic, just server-side now).
 - CSV export of the current filtered view is still done client-side for simplicity —
   it exports whatever's currently loaded and filtered.
-- The Owner Portal tab uses the backend's dev-mode lookup/submit routes
-  (`/api/responses/by-server-id/{id}`, `/api/responses/submit-dev/{id}`) so it can keep
-  the same "pick your server from a dropdown" flow without wiring up email-link routing
-  in this SPA. The *real* reminder-email flow still uses signed tokenized links
-  (`/api/responses/lookup?token=...`, `/api/responses/submit?token=...`) — building a
-  proper `/owner-response?token=...` route for those is a reasonable next step once you
-  decide on real owner-facing hosting.
+- The admin app's "Owner Portal" tab keeps using the backend's dev-mode lookup/submit
+  routes (`/api/responses/by-server-id/{id}`, `/api/responses/submit-dev/{id}`, now
+  requiring admin login) — a demo convenience for showing the workflow without a real
+  email round-trip.
+- The *real* reminder-email flow uses signed tokenized links
+  (`/api/responses/lookup?token=...`, `/api/responses/submit?token=...`) and now has an
+  actual frontend page for them: `/owner-response?token=...` → `OwnerResponsePage`,
+  supporting one or several servers per link (a digest reminder covers multiple).
+- Real owner accounts (`OwnerDashboard`, `/api/my/servers`) are a third, independent
+  way for an owner to reach the same information and respond — no token or email
+  needed, just login.

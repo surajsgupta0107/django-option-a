@@ -83,12 +83,18 @@ def parse_upload(filename: str, content: bytes) -> List[Dict[str, Any]]:
         memory = _num(col("memory_pct"), 0) or 0
         storage = _num(col("storage_pct"), None)
 
+        # added for testing
+        owner_fullname = str(col("owner")).strip()
+        owner_email_default = "unknown@company.com"
+        if owner_fullname:
+            username = "".join(owner_fullname.lower().split())
+            owner_email_default = f"{username}@gmail.com"
+
         records.append({
             "name": str(col("name")) if col("name") is not None else None,
             "application": str(col("application")) if col("application") is not None else "Unassigned",
             "owner": str(col("owner")) if col("owner") is not None else "Unassigned",
-            # "owner_email": str(col("owner_email")) if col("owner_email") is not None else "unknown@company.com",
-            "owner_email": str(col("owner_email")) if col("owner_email") is not None else "surajsgupta0107@gmail.com",
+            "owner_email": str(col("owner_email")) if col("owner_email") is not None else owner_email_default,
             "company": str(col("company")) if col("company") is not None else None,
             "description": str(col("description")) if col("description") is not None else None,
             "environment": str(col("environment")) if col("environment") is not None else "Production",

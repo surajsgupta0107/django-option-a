@@ -46,9 +46,8 @@ everything — without that tradeoff.
    copy .env.example .env
    docker compose up --build
    ```
-4. Open `http://localhost:8000/`.
-
-To create a Django admin superuser (optional): `docker compose exec api python manage.py createsuperuser`
+4. Create your admin login (required now — there's no default/shared credential): `docker compose exec api python manage.py createsuperuser`
+5. Open `http://localhost:8000/` and log in with that account.
 
 Stop with `Ctrl+C` then `docker compose down` (add `-v` to also wipe the Postgres volume).
 
@@ -77,7 +76,7 @@ process without a worker running.
    npm run build
    ```
    `runserver` picks up the built files automatically — no restart, no `collectstatic` needed in DEBUG mode.
-5. Visit `http://localhost:8000/`.
+5. Visit `http://localhost:8000/` and log in with the superuser account you just created.
 
 Reminder emails log to the terminal running `runserver`/Celery when `SMTP_HOST` is blank.
 
@@ -108,47 +107,89 @@ django-option-a/
 ├── servers_app/
 │   ├── models.py                Server, Reminder, Response, ThresholdConfig, etc.
 │   ├── services.py               Shared KPI computation used by the dashboard API
-│   ├── views.py / urls.py        REST API (DRF)
-│   └── migrations/0001_initial.py   Hand-authored, field-checked against models.py
+│   ├── security.py               Real per-user auth checks + signed owner-link tokens
+│   ├── views.py / urls.py        REST API (DRF) — auth, admin, and owner-scoped routes
+│   └── migrations/               Hand-authored, field-checked against models.py
 ├── templates/react_app.html    One-line HTML shell that mounts the built React app
 ├── static/                     React build output lands in static/react/ (gitignored — build it yourself)
-├── frontend/                   React + Vite source
+├── frontend/                   React + Vite source — Login, admin App, OwnerDashboard, OwnerResponsePage
 ├── docker-compose.yml          Postgres + Redis + API + Celery worker + beat
 ├── requirements.txt
 ├── .env.example
 └── sample-data-enriched.xlsx   Your real sample data, ready to upload
 ```
 
-## What's stubbed vs. real (Phase 1 scope)
+## Accounts, roles, and how login works
 
-- **Admin auth** is a single shared API key (`ADMIN_API_KEY`), not real SSO — sent as `X-API-Key` on API requests.
-- **Owner identity**: the real, token-based flow is now fully implemented — reminder emails link to `/owner-response?token=...`, which renders a standalone page (`OwnerResponsePage` in `frontend/src/ServerUtilizationApp.jsx`, routed in `main.jsx`) that calls the token-based `/api/responses/lookup` and `/api/responses/submit` endpoints, no admin key or login involved. The admin app's own "Owner Portal" tab still uses the separate dropdown-based `*-dev` endpoints as a convenience for demoing the workflow without needing a real email round-trip — that one's still a deliberate shortcut, not a bug.
+There's no shared API key anymore — every request is tied to a real logged-in user
+(DRF token auth). One login screen, one endpoint (`POST /api/auth/login`); the backend
+decides Admin vs. Owner from the account's Django `is_staff` flag and returns it as
+`role`, and the frontend routes accordingly:
+
+- **Admin** (`is_staff=True`): sees the full dashboard app — everything that existed before.
+- **Owner** (`is_staff=False`): sees a separate, much smaller "My Servers" dashboard, scoped to servers where `Server.owner_email` matches their account's email — full detail (utilization, allocation, reclaimable capacity, reminder history, past responses) and a respond form per server, no admin controls visible at all.
+
+Create accounts via Django admin (`/admin/auth/user/add/`) or `python manage.py createsuperuser`
+for the first admin. For an Owner account: leave "Staff status" unchecked and set
+**Email** to exactly match that person's `owner_email` on their `Server` rows (case-insensitive).
+
+The **emailed reminder link stays separate and login-free** — clicking it doesn't
+require an account at all, just the signed token in the URL. Both paths exist on
+purpose: the token link is the fastest way to respond to one reminder; a real account
+is for an owner who wants to check on their servers proactively, any time, without
+waiting for an email.
+
+## Reminders: single-server vs. digest (multi-server) emails
+
+`POST /api/reminders/bulk` now groups the selected servers by `owner_email` server-side.
+An owner with only one selected server still gets the normal single-server email
+(`ThresholdConfig.email_template`); an owner with several gets **one consolidated
+email** listing all of them (`ThresholdConfig.email_template_digest`, editable from
+Settings), with one response link covering the whole group. Every server still gets
+its own `Reminder` row for accurate per-server tracking — they just share a `digest_id`
+marking them as having come from the same actual email. This is automatic; there's no
+separate "send as digest" toggle in the UI — select multiple servers for the same
+owner and bulk-send does the right thing.
+
+## What's stubbed vs. real (Phase 2 progress)
+
+- **Admin & Owner auth** is now real per-user login (Django `auth.User` + DRF token auth) — not SSO/OIDC yet, but no more shared secret either. See `servers_app/security.py`.
+- **Owner identity** on the token-link flow is unchanged and still real (signed, expiring tokens — now supporting multiple servers per token for digest reminders).
 - **Email** logs to the console/terminal if `SMTP_HOST` is blank.
 - **Upload replaces the whole dataset** each time rather than merging.
-- **Migration file is hand-authored**, not `makemigrations`-generated (Django wasn't installable offline). Verified field-for-field against `models.py` by script, but if you add/change a model field, run `python manage.py makemigrations servers_app` yourself going forward.
+- **Migration files are hand-authored**, not `makemigrations`-generated (Django wasn't installable offline). Verified field-for-field against `models.py` by script, but if you add/change a model field, run `python manage.py makemigrations servers_app` yourself going forward.
+- **Not yet done**: real SSO/OIDC, password reset flow, self-serve owner account creation (an admin still has to create Owner accounts manually via `/admin/`), rate-limiting on `/api/auth/login`.
 
 ## API reference
 
 | Endpoint | Notes |
 |---|---|
-| `GET /api/servers` | List + filter (`application`, `owner`, `environment`, `company`, `status`, `search`, `needs_reminder`) |
-| `GET /api/servers/{id}` | Full detail incl. reminder/response history |
-| `GET /api/servers/meta/filters` | Distinct values for filter dropdowns |
-| `POST /api/servers/upload` | CSV/XLSX upload (admin only) |
-| `GET /api/servers/export/csv` | Export current dataset |
-| `GET/PUT /api/thresholds` | View/update the underutilization rule (admin only to update) |
-| `POST /api/reminders/server/{id}` / `POST /api/reminders/bulk` | Queues reminder email(s) via Celery (admin only) |
-| `GET /api/responses/lookup?token=...` | Resolves a reminder-link token to server details, no login |
-| `POST /api/responses/submit?token=...` | Owner submits keep/downsize/decommission + comment |
-| `GET /api/dashboard/kpis` | Aggregated KPIs + chart data |
+| `POST /api/auth/login` | `{username, password}` → `{token, username, email, role}` |
+| `POST /api/auth/logout` | Invalidates the current token |
+| `GET /api/auth/me` | Current logged-in user's info |
+| `GET /api/servers` | Admin only. List + filter (`application`, `owner`, `environment`, `company`, `status`, `search`, `needs_reminder`) |
+| `GET /api/servers/{id}` | Admin only. Full detail incl. reminder/response history |
+| `GET /api/servers/meta/filters` | Admin only. Distinct values for filter dropdowns |
+| `POST /api/servers/upload` | Admin only. CSV/XLSX upload |
+| `GET /api/servers/export/csv` | Admin only. Export current dataset |
+| `GET/PUT /api/thresholds` | GET is admin-only too now; PUT to change the rule (also admin only) |
+| `POST /api/reminders/server/{id}` | Admin only. Single-server reminder |
+| `POST /api/reminders/bulk` | Admin only. Owner-aware — see "digest emails" above |
+| `GET /api/responses/lookup?token=...` | No login — resolves a reminder-link token to one or more servers |
+| `POST /api/responses/submit?token=...` | No login — body `{"responses": [{"server_id", "decision", "comment"}, ...]}`, one entry per server the token covers |
+| `GET /api/my/servers` | Any logged-in account — servers where `owner_email` matches your account email |
+| `POST /api/my/servers/{id}/respond` | Any logged-in account — must own that server (or be staff) |
+| `GET /api/dashboard/kpis` | Admin only. Aggregated KPIs + chart data |
 
-Admin-only routes expect header `X-API-Key: <ADMIN_API_KEY>`.
+All admin/owner routes above (everything except `/auth/login` and the token-based
+`/responses/*`) expect header `Authorization: Token <key>`, obtained from `/auth/login`.
 
 ## If something breaks
 
 1. **Blank page / 404s on CSS or JS** — you likely skipped `npm run build`, or it landed somewhere other than `static/react/`. Check that `static/react/index.js` exists.
-2. A pinned package version in `requirements.txt` that's since changed — try relaxing the pin.
-3. Docker Desktop not fully started before `docker compose up` — give it a minute.
-4. Port conflicts (8000, 5173, 5432, 6379 need to be free).
+2. **"Admin login required" errors right after upgrading** — the old shared `ADMIN_API_KEY` is retired; you need a real account now (`createsuperuser` or `/admin/`) and to log in through the UI.
+3. A pinned package version in `requirements.txt` that's since changed — try relaxing the pin.
+4. Docker Desktop not fully started before `docker compose up` — give it a minute.
+5. Port conflicts (8000, 5173, 5432, 6379 need to be free).
 
 Tell me the exact error and I'll fix it directly.

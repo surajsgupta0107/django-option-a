@@ -15,6 +15,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "rest_framework.authtoken",
     "django_filters",
     "corsheaders",
     "django_celery_beat",
@@ -89,6 +90,16 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
     "DEFAULT_FILTER_BACKENDS": ["django_filters.rest_framework.DjangoFilterBackend"],
+    # Real per-user auth (see servers_app/security.py) replaces the old shared
+    # ADMIN_API_KEY model. TokenAuthentication reads `Authorization: Token <key>` and
+    # populates request.user automatically; permission checks stay manual (require_admin
+    # / require_owner_access) rather than DRF permission classes, consistent with the
+    # rest of this codebase's style.
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        # "rest_framework.authtoken.authentication.TokenAuthentication",
+        "rest_framework.authentication.TokenAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
+    ],
     "DEFAULT_PERMISSION_CLASSES": [],
 }
 
@@ -101,7 +112,6 @@ CELERY_TIMEZONE = "UTC"
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 
 # --- App-specific settings ---
-ADMIN_API_KEY = config("ADMIN_API_KEY", default="dev-admin-key-change-me")
 OWNER_LINK_SECRET = config("OWNER_LINK_SECRET", default="dev-owner-link-secret-change-me")
 OWNER_LINK_MAX_AGE_SECONDS = config("OWNER_LINK_MAX_AGE_SECONDS", default=60 * 60 * 24 * 30, cast=int)
 FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:8000")
@@ -112,6 +122,7 @@ EMAIL_HOST_USER = config("SMTP_USERNAME", default="")
 EMAIL_HOST_PASSWORD = config("SMTP_PASSWORD", default="")
 EMAIL_USE_TLS = config("SMTP_USE_TLS", default=True, cast=bool)
 DEFAULT_FROM_EMAIL = config("SMTP_FROM_ADDRESS", default="infra-ops@company.com")
+DEFAULT_TO_EMAIL = config("SMTP_TO_ADDRESS", default="infra-ops@company.com")
 # If EMAIL_HOST is blank, fall back to console backend so reminders are visible in dev logs.
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend" if EMAIL_HOST else "django.core.mail.backends.console.EmailBackend"
 

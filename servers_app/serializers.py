@@ -5,7 +5,7 @@ from .models import Server, Reminder, Response, ThresholdConfig
 class ReminderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Reminder
-        fields = ["id", "sent_at", "sent_by"]
+        fields = ["id", "sent_at", "sent_by", "digest_id"]
 
 
 class ResponseSerializer(serializers.ModelSerializer):
@@ -54,7 +54,7 @@ class ThresholdConfigSerializer(serializers.ModelSerializer):
         fields = [
             "cpu_threshold", "memory_threshold", "storage_threshold",
             "cpu_enabled", "memory_enabled", "storage_enabled", "rule_mode",
-            "overutilized_ceiling", "email_template",
+            "overutilized_ceiling", "email_template", "email_template_digest",
         ]
 
 

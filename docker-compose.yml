@@ -33,7 +33,6 @@ services:
       DB_PORT: 5432
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
-      ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-admin-key-change-me}
       OWNER_LINK_SECRET: ${OWNER_LINK_SECRET:-dev-owner-link-secret-change-me}
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:8000}
       SMTP_HOST: ${SMTP_HOST:-}
