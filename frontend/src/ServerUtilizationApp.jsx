@@ -609,18 +609,18 @@ export default function App({ auth, onLogout }) {
     }
   }
 
-  async function submitOwnerFeedback() {
+  async function submitOwnerResponse() {
     if (!portalSelectedId) return;
     try {
       await apiFetch(apiBaseUrl, `/responses/submit-dev/${portalSelectedId}`, {
         method: "POST", authToken: auth.token,
         body: { decision: portalResponse, comment: portalComment },
       });
-      pushToast("Feedback submitted — infrastructure team notified");
+      pushToast("Response submitted — infrastructure team notified");
       setPortalComment("");
       await fetchServers();
     } catch (err) {
-      pushToast(`Couldn't submit feedback: ${err.message}`);
+      pushToast(`Couldn't submit response: ${err.message}`);
     }
   }
 
@@ -749,7 +749,7 @@ export default function App({ auth, onLogout }) {
               servers={withStatus} portalSelectedId={portalSelectedId} setPortalSelectedId={setPortalSelectedId}
               portalResponse={portalResponse} setPortalResponse={setPortalResponse}
               portalComment={portalComment} setPortalComment={setPortalComment}
-              portalServer={portalServer} submitOwnerFeedback={submitOwnerFeedback}
+              portalServer={portalServer} submitOwnerResponse={submitOwnerResponse}
             />
           )}
 
@@ -1069,12 +1069,12 @@ function ServerModal({ server, onClose, sendReminder, emailTemplate }) {
       <div className="suo-modal suo-scrollbar" onClick={e => e.stopPropagation()}>
         <div className="suo-modal-head">
           <div>
-            <div className="suo-mono" style={{ fontSize: 16, fontWeight: 700 }}>{s.name}</div>
-            <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
-              {s.application} · {s.environment} · {s.owner}{s.company ? ` · ${s.company}` : ""}
+            <div className="suo-mono" style={{ fontSize: 16, fontWeight: 600 }}>{s.name}</div>
+            <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 5 }}>
+              {s.application}{s.company ? ` · ${s.company}` : ""} · {s.owner} · {s.environment}
             </div>
             {(s.description || s.os) && (
-              <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 3 }}>
+              <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 5 }}>
                 {s.description}{s.description && s.os ? " · " : ""}{s.os ? `OS: ${s.os}` : ""}
               </div>
             )}
@@ -1087,18 +1087,18 @@ function ServerModal({ server, onClose, sendReminder, emailTemplate }) {
             {needsReminder(s, s.status) && <span className="suo-badge suo-badge-neutral">Needs reminder</span>}
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
             {[
               { label: "CPU", value: s.cpu, alloc: `${s.cpuAllocated} vCPU allocated`, reclaim: s.reclaimableVcpu != null ? `${s.reclaimableVcpu} vCPU reclaimable` : null },
               { label: "Memory", value: s.memory, alloc: `${s.memAllocated} GB allocated`, reclaim: s.reclaimableMemoryGb != null ? `${s.reclaimableMemoryGb} GB reclaimable` : null },
-              { label: "Storage", value: s.storage, alloc: s.storageAllocated != null ? `${s.storageAllocated} GB allocated` : "Not tracked in this dataset", reclaim: null },
+              { label: "Storage", value: s.storage, alloc: s.storageAllocated != null ? `${s.storageAllocated} GB allocated` : "Not tracked", reclaim: s.reclaimableStorageGb != null ? `${s.reclaimableStorageGb} GB reclaimable` : null },
             ].map(m => (
               <div key={m.label} className="suo-card" style={{ padding: 12 }}>
-                <div style={{ fontSize: 11, color: "var(--text-faint)", textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600 }}>{m.label}</div>
-                <div className="suo-mono" style={{ fontSize: 20, fontWeight: 700, margin: "6px 0" }}>{m.value != null ? `${m.value}%` : "—"}</div>
+                <div style={{ fontSize: 11, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600 }}>{m.label}</div>
+                <div className="suo-mono" style={{ fontSize: 18, fontWeight: 700, margin: "6px 0" }}>{m.value != null ? `${m.value}%` : "—"}</div>
                 <LedGauge value={m.value} status={s.status} big />
-                <div style={{ fontSize: 10.5, color: "var(--text-faint)", marginTop: 8 }}>{m.alloc}</div>
-                {m.reclaim && <div style={{ fontSize: 10.5, color: "var(--warn)", marginTop: 2 }}>{m.reclaim}</div>}
+                <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 8 }}>{m.alloc}</div>
+                {m.reclaim && <div style={{ fontSize: 11, color: "var(--warn)", marginTop: 8 }}>{m.reclaim}</div>}
               </div>
             ))}
           </div>
@@ -1112,7 +1112,7 @@ function ServerModal({ server, onClose, sendReminder, emailTemplate }) {
             </button>
           </div>
           <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 4 }}>
-            {s.remindersSent} sent · last {fmtDate(s.lastReminderDate)} · {s.ownerResponded ? "owner responded" : (s.remindersSent > 0 ? "awaiting response" : "no reminders yet")}
+            {s.remindersSent} reminder{s.remindersSent === 1 ? "" : "s"} sent · last {fmtDate(s.lastReminderDate)} · {s.ownerResponded ? "owner responded" : (s.remindersSent > 0 ? "awaiting response" : "no reminders yet")}
           </div>
 
           {eligibleReminder && (
@@ -1122,14 +1122,15 @@ function ServerModal({ server, onClose, sendReminder, emailTemplate }) {
           )}
 
           <div className="suo-divider" />
-          <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}><MessageSquare size={14} /> Owner comments</div>
+
+          <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}><MessageSquare size={14} /> Owner responses</div>
           {s.comments.length === 0 ? (
-            <div style={{ fontSize: 12, color: "var(--text-faint)" }}>No comments yet.</div>
+            <div style={{ fontSize: 12, color: "var(--text-faint)" }}>No responses yet.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {s.comments.map((c, i) => (
                 <div key={i} style={{ background: "var(--surface-2)", borderRadius: 8, padding: 10 }}>
-                  <div style={{ fontSize: 11.5, fontWeight: 600 }}>{c.author} <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>· {fmtDate(c.date)}</span></div>
+                  <div style={{ fontSize: 11, fontWeight: 600 }}>{c.author} <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>· {fmtDate(c.date)}</span></div>
                   <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>{c.text}</div>
                 </div>
               ))}
@@ -1142,23 +1143,24 @@ function ServerModal({ server, onClose, sendReminder, emailTemplate }) {
 }
 
 /* ---------------------------------- OWNER PORTAL VIEW ---------------------------------- */
-function OwnerPortalView({ servers, portalSelectedId, setPortalSelectedId, portalResponse, setPortalResponse, portalComment, setPortalComment, portalServer, submitOwnerFeedback }) {
+function OwnerPortalView({ servers, portalSelectedId, setPortalSelectedId, portalResponse, setPortalResponse, portalComment, setPortalComment, portalServer, submitOwnerResponse }) {
   const reminded = servers.filter(s => s.remindersSent > 0);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div className="suo-card">
-        <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+        <div style={{ fontSize: 13, color: "var(--text-dim)" }}>
           This simulates the simplified access an application owner would use — no infrastructure login required. Pick the server you were reminded about from the table below.
         </div>
       </div>
 
       <div className="suo-table-wrap">
-        <div style={{ maxHeight: 320, overflowY: "auto" }} className="suo-scrollbar">
+        <div style={{ maxHeight: 260, overflowY: "auto" }} className="suo-scrollbar">
           <table className="suo-table">
             <thead>
               <tr>
                 <th>Server</th>
                 <th>Application</th>
+                <th>Company</th>
                 <th>Owner</th>
                 <th>Environment</th>
                 <th>CPU</th>
@@ -1166,17 +1168,17 @@ function OwnerPortalView({ servers, portalSelectedId, setPortalSelectedId, porta
                 <th>Storage</th>
                 <th>Status</th>
                 <th>Reminders</th>
+                <th>Last Reminder</th>
+                <th>Response</th>
               </tr>
             </thead>
             <tbody>
               {reminded.map(s => (
-                <tr
-                  key={s.id}
-                  className={`suo-row ${String(s.id) === String(portalSelectedId) ? "selected" : ""}`}
-                  onClick={() => setPortalSelectedId(String(s.id))}
-                >
+                <tr key={s.id} className={`suo-row ${String(s.id) === String(portalSelectedId) ? "selected" : ""}`}
+                  onClick={() => setPortalSelectedId(String(s.id))}>
                   <td className="suo-mono" style={{ fontWeight: 600 }}>{s.name}</td>
                   <td>{s.application}</td>
+                  <td style={{ color: s.company ? "var(--text)" : "var(--text-faint)" }}>{s.company || "—"}</td>
                   <td>{s.owner}</td>
                   <td><span className="suo-chip">{s.environment}</span></td>
                   <td><LedGauge value={s.cpu} status={s.status} /></td>
@@ -1184,10 +1186,16 @@ function OwnerPortalView({ servers, portalSelectedId, setPortalSelectedId, porta
                   <td><LedGauge value={s.storage} status={s.status} /></td>
                   <td><StatusBadge status={s.status} /></td>
                   <td className="suo-mono">{s.remindersSent}</td>
+                  <td className="suo-mono" style={{ color: "var(--text-dim)" }}>{fmtDate(s.lastReminderDate)}</td>
+                  <td>
+                    {s.ownerResponded
+                      ? <span className="suo-badge suo-badge-neutral">{RESPONSE_LABELS[s.ownerResponse]}</span>
+                      : (s.remindersSent > 0 ? <span className="suo-badge suo-badge-warn">Needs response</span> : <span style={{ color: "var(--text-faint)", fontSize: 11.5 }}>—</span>)}
+                  </td>
                 </tr>
               ))}
               {reminded.length === 0 && (
-                <tr><td colSpan={9} style={{ textAlign: "center", padding: 30, color: "var(--text-faint)" }}>No servers have been reminded yet.</td></tr>
+                <tr><td colSpan={12} style={{ textAlign: "center", padding: 30, color: "var(--text-faint)" }}>No servers have been reminded yet.</td></tr>
               )}
             </tbody>
           </table>
@@ -1197,50 +1205,72 @@ function OwnerPortalView({ servers, portalSelectedId, setPortalSelectedId, porta
       {portalServer && (
         <>
           <div className="suo-card">
-            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Current utilization — {portalServer.name}</div>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 5 }}>Current utilization — {portalServer.name}</div>
+            <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 5 }}>
+              {portalServer.application}{portalServer.company ? ` · ${portalServer.company}` : ""} · {portalServer.owner} · {portalServer.environment}
+            </div>
+            {portalServer.description && <div style={{ fontSize: 12, color: "var(--text-faint)", marginBottom: 10 }}>{portalServer.description}</div>}
+            <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+              <StatusBadge status={portalServer.status} />
+              {!portalServer.ownerResponded && <span className="suo-badge suo-badge-neutral">Needs response</span>}
+            </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-              {[["CPU", portalServer.cpu], ["Memory", portalServer.memory], ["Storage", portalServer.storage]].map(([label, val]) => (
-                <div key={label}>
-                  <div style={{ fontSize: 11, color: "var(--text-faint)" }}>{label}</div>
-                  <div className="suo-mono" style={{ fontSize: 18, fontWeight: 700, margin: "4px 0" }}>{val != null ? `${val}%` : "—"}</div>
-                  <LedGauge value={val} status={portalServer.status} />
+              {[
+                { label: "CPU", value: portalServer.cpu, alloc: `${portalServer.cpuAllocated ?? "—"} vCPU allocated`, reclaim: portalServer.reclaimableVcpu != null ? `${portalServer.reclaimableVcpu} vCPU reclaimable` : null },
+                { label: "Memory", value: portalServer.memory, alloc: `${portalServer.memAllocated ?? "—"} GB allocated`, reclaim: portalServer.reclaimableMemoryGb != null ? `${portalServer.reclaimableMemoryGb} GB reclaimable` : null },
+                { label: "Storage", value: portalServer.storage, alloc: portalServer.storageAllocated != null ? `${portalServer.storageAllocated} GB allocated` : "Not tracked", reclaim: portalServer.reclaimableStorageGb != null ? `${portalServer.reclaimableStorageGb} GB reclaimable` : null },
+              ].map(m => (
+                <div key={m.label} className="suo-card" style={{ padding: 10 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600 }}>{m.label}</div>
+                  <div className="suo-mono" style={{ fontSize: 18, fontWeight: 700, margin: "5px 0" }}>{m.value != null ? `${m.value}%` : "—"}</div>
+                  <LedGauge value={m.value} status={portalServer.status} big />
+                  <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 10 }}>{m.alloc}</div>
+                  {m.reclaim && <div style={{ fontSize: 11, color: "var(--warn)", marginTop: 10 }}>{m.reclaim}</div>}
                 </div>
               ))}
             </div>
-          </div>
-
-          <div className="suo-card">
-            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 12 }}>Is this allocation still needed?</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {Object.entries(RESPONSE_LABELS).map(([key, label]) => (
-                <label key={key} className={`suo-radio-card ${portalResponse === key ? "active" : ""}`}>
-                  <input type="radio" name="resp" checked={portalResponse === key} onChange={() => setPortalResponse(key)} />
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 12.5 }}>{label}</div>
-                  </div>
-                </label>
-              ))}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+              <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}><History size={14} /> Reminder history</div>
             </div>
-            <div style={{ marginTop: 14 }}>
-              <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginBottom: 6 }}>Additional comments or justification</div>
-              <textarea className="suo-input" style={{ width: "100%", minHeight: 80, resize: "vertical", fontFamily: "var(--sans)" }} value={portalComment} onChange={e => setPortalComment(e.target.value)} placeholder="e.g. This server supports a scheduled monthly job outside business hours…" />
+            <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 10 }}>
+              {portalServer.remindersSent} reminder{portalServer.remindersSent === 1 ? "" : "s"} received
+              {portalServer.lastReminderDate ? ` · last ${fmtDate(portalServer.lastReminderDate)}` : ""}
+              {portalServer.ownerResponded ? " · you've responded" : " · no responses yet"}
             </div>
-            <button className="suo-btn suo-btn-primary" style={{ marginTop: 12 }} onClick={submitOwnerFeedback}>Submit feedback</button>
           </div>
 
           {portalServer.comments.length > 0 && (
             <div className="suo-card">
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Previous responses</div>
+              <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}><MessageSquare size={14} /> Previous responses</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {portalServer.comments.map((c, i) => (
                   <div key={i} style={{ background: "var(--surface-2)", borderRadius: 8, padding: 10 }}>
-                    <div style={{ fontSize: 11.5, fontWeight: 600 }}>{c.author} <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>· {fmtDate(c.date)}</span></div>
-                    <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>{c.text}</div>
+                    <div style={{ fontSize: 11, fontWeight: 600 }}>{c.author} <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>· {fmtDate(c.date)}</span></div>
+                    <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 5 }}>{c.text}</div>
                   </div>
                 ))}
               </div>
             </div>
           )}
+
+          <div className="suo-card">
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Is this allocation still needed?</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {Object.entries(RESPONSE_LABELS).map(([key, label]) => (
+                <label key={key} className={`suo-radio-card ${portalResponse === key ? "active" : ""}`}>
+                  <input type="radio" name="resp" checked={portalResponse === key} onChange={() => setPortalResponse(key)} />
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 12 }}>{label}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 10 }}>Additional comments or justification</div>
+              <textarea className="suo-input" style={{ width: "100%", minHeight: 80, resize: "vertical", fontFamily: "var(--sans)" }} value={portalComment} onChange={e => setPortalComment(e.target.value)} placeholder="e.g. This server supports a scheduled monthly job outside business hours…" />
+            </div>
+            <button className="suo-btn suo-btn-primary" style={{ marginTop: 10 }} onClick={submitOwnerResponse}>Submit response</button>
+          </div>
         </>
       )}
     </div>
@@ -1536,10 +1566,10 @@ export function OwnerResponsePage() {
   }
 
   return (
-    <div className="suo-root" style={{ alignItems: "flex-start", justifyContent: "center", padding: "40px 20px" }}>
+    <div className="suo-root" style={{ alignItems: "flex-start", justifyContent: "center", padding: "20px 0px" }}>
       <GlobalStyle />
-      <div style={{ width: "100%", maxWidth: 620 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 24 }}>
+      <div style={{ width: "100%", maxWidth: "calc(100vw - 260px)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
           <div className="suo-brand-mark" />
           <div>
             <div className="suo-brand-text">RightSize</div>
@@ -1548,7 +1578,7 @@ export function OwnerResponsePage() {
         </div>
 
         {status === "loading" && (
-          <div className="suo-card" style={{ textAlign: "center", padding: "40px 20px", color: "var(--text-dim)" }}>
+          <div className="suo-card" style={{ textAlign: "center", padding: "20px 0px", color: "var(--text-dim)" }}>
             Loading server details…
           </div>
         )}
@@ -1561,72 +1591,147 @@ export function OwnerResponsePage() {
         )}
 
         {status === "submitted" && (
-          <div className="suo-card" style={{ textAlign: "center", padding: "36px 20px" }}>
+          <div className="suo-card" style={{ textAlign: "center", padding: "20px 0px" }}>
             <CheckCircle2 size={28} style={{ color: "var(--ok)", marginBottom: 12 }} />
-            <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>Thanks — feedback submitted</div>
-            <div style={{ fontSize: 12.5, color: "var(--text-dim)" }}>The infrastructure team has been notified for all {servers.length} server{servers.length === 1 ? "" : "s"}. You can close this page.</div>
+            <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>Thanks — response submitted</div>
+            <div style={{ fontSize: 12, color: "var(--text-dim)" }}>The infrastructure team has been notified for all {servers.length} server{servers.length === 1 ? "" : "s"}. You can close this page.</div>
           </div>
         )}
 
         {status === "ready" && servers.length > 0 && (
           <>
             {servers.length > 1 && (
-              <div className="suo-card" style={{ marginBottom: 4, background: "var(--surface-2)" }}>
-                <div style={{ fontSize: 12.5, color: "var(--text-dim)" }}>
-                  {servers.length} of your servers are flagged for review. Set a response for each one below, then submit once at the bottom.
+              <>
+                <div className="suo-card" style={{ marginBottom: 10, background: "var(--surface-2)" }}>
+                  <div style={{ fontSize: 13, color: "var(--text-dim)" }}>
+                    {servers.length} of your servers are flagged for review. Set a response for each one below, then submit once at the bottom.
+                  </div>
                 </div>
-              </div>
+
+                <div className="suo-table-wrap" style={{ marginBottom: 10 }}>
+                  <div style={{ maxHeight: 260, overflowY: "auto" }} className="suo-scrollbar">
+                    <table className="suo-table">
+                      <thead>
+                        <tr>
+                          <th>Server</th>
+                          <th>Application</th>
+                          <th>Company</th>
+                          <th>Environment</th>
+                          <th>CPU</th>
+                          <th>Memory</th>
+                          <th>Storage</th>
+                          <th>Status</th>
+                          <th>Reminders</th>
+                          <th>Last Reminder</th>
+                          <th>Response</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {servers.map(s => (
+                          <tr key={s.id} className="suo-row"
+                            onClick={() => document.getElementById(`owner-resp-card-${s.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" })}>
+                            <td className="suo-mono" style={{ fontWeight: 600 }}>{s.name}</td>
+                            <td>{s.application}</td>
+                            <td style={{ color: s.company ? "var(--text)" : "var(--text-faint)" }}>{s.company || "—"}</td>
+                            <td><span className="suo-chip">{s.environment}</span></td>
+                            <td><LedGauge value={s.cpu} status={s.status} /></td>
+                            <td><LedGauge value={s.memory} status={s.status} /></td>
+                            <td><LedGauge value={s.storage} status={s.status} /></td>
+                            <td><StatusBadge status={s.status} /></td>
+                            <td className="suo-mono">{s.remindersSent}</td>
+                            <td className="suo-mono" style={{ color: "var(--text-dim)" }}>{fmtDate(s.lastReminderDate)}</td>
+                            <td>
+                              {s.ownerResponded
+                                ? <span className="suo-badge suo-badge-neutral">{RESPONSE_LABELS[s.ownerResponse]}</span>
+                                : (s.remindersSent > 0 ? <span className="suo-badge suo-badge-warn">Needs response</span> : <span style={{ color: "var(--text-faint)", fontSize: 11.5 }}>—</span>)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
             )}
 
             {servers.map(server => (
-              <div key={server.id} className="suo-card">
-                <div className="suo-mono" style={{ fontSize: 14, fontWeight: 700 }}>{server.name}</div>
-                <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
-                  {server.application} · {server.environment}{server.company ? ` · ${server.company}` : ""}
+              <div key={server.id} id={`owner-resp-card-${server.id}`} className="suo-card">
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 5 }}>{server.name}</div>
+                <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 5 }}>
+                  {server.application}{server.company ? ` · ${server.company}` : ""} · {server.environment}
                 </div>
-                {(server.description || server.os) && (
-                  <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 3 }}>
-                    {server.description}{server.description && server.os ? " · " : ""}{server.os ? `OS: ${server.os}` : ""}
-                  </div>
-                )}
+                {server.description && <div style={{ fontSize: 12, color: "var(--text-faint)", marginBottom: 10 }}>{server.description}</div>}
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 14, marginBottom: 14 }}>
-                  {[["CPU", server.cpu], ["Memory", server.memory], ["Storage", server.storage]].map(([label, val]) => (
-                    <div key={label}>
-                      <div style={{ fontSize: 11, color: "var(--text-faint)" }}>{label}</div>
-                      <div className="suo-mono" style={{ fontSize: 16, fontWeight: 700, margin: "4px 0" }}>{val != null ? `${val}%` : "—"}</div>
-                      <LedGauge value={val} status={server.status} />
+                <div className="suo-divider" />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                  {[
+                    { label: "CPU", value: server.cpu, alloc: `${server.cpuAllocated ?? "—"} vCPU allocated`, reclaim: server.reclaimableVcpu != null ? `${server.reclaimableVcpu} vCPU reclaimable` : null },
+                    { label: "Memory", value: server.memory, alloc: `${server.memAllocated ?? "—"} GB allocated`, reclaim: server.reclaimableMemoryGb != null ? `${server.reclaimableMemoryGb} GB reclaimable` : null },
+                    { label: "Storage", value: server.storage, alloc: server.storageAllocated != null ? `${server.storageAllocated} GB allocated` : "Not tracked", reclaim: server.reclaimableStorageGb != null ? `${server.reclaimableStorageGb} GB reclaimable` : null },
+                  ].map(m => (
+                    <div key={m.label} className="suo-card" style={{ padding: 10 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600 }}>{m.label}</div>
+                      <div className="suo-mono" style={{ fontSize: 18, fontWeight: 700, margin: "5px 0" }}>{m.value != null ? `${m.value}%` : "—"}</div>
+                      <LedGauge value={m.value} status={server.status} big />
+                      <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 10 }}>{m.alloc}</div>
+                      {m.reclaim && <div style={{ fontSize: 11, color: "var(--warn)", marginTop: 10 }}>{m.reclaim}</div>}
                     </div>
                   ))}
                 </div>
 
+                <div className="suo-divider" />
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}><History size={14} /> Reminder history</div>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 10 }}>
+                  {server.remindersSent} reminder{server.remindersSent === 1 ? "" : "s"} received
+                  {server.lastReminderDate ? ` · last ${fmtDate(server.lastReminderDate)}` : ""}
+                  {server.ownerResponded ? " · you've responded" : " · no responses yet"}
+                </div>
                 {server.ownerResponded && (
-                  <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginBottom: 10 }}>
+                  <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 10 , marginBottom: 10 }}>
                     You previously said: <strong>{RESPONSE_LABELS[server.ownerResponse]}</strong>. Submitting again below will record a new response.
                   </div>
                 )}
 
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div className="suo-divider" />
+                {server.comments.length > 0 && (
+                  <>
+                    <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}><MessageSquare size={14} /> Previous responses</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}>
+                      {server.comments.map((c, i) => (
+                        <div key={i} style={{ background: "var(--surface-2)", borderRadius: 8, padding: 10 }}>
+                          <div style={{ fontSize: 11, fontWeight: 600 }}>{c.author} <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>· {fmtDate(c.date)}</span></div>
+                          <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 5 }}>{c.text}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                <div className="suo-divider" />
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Is this allocation still needed?</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {Object.entries(RESPONSE_LABELS).map(([key, label]) => (
                     <label key={key} className={`suo-radio-card ${(answers[server.id]?.decision) === key ? "active" : ""}`}>
                       <input type="radio" name={`resp-${server.id}`} checked={(answers[server.id]?.decision) === key} onChange={() => setAnswer(server.id, "decision", key)} />
-                      <div style={{ fontWeight: 600, fontSize: 12.5 }}>{label}</div>
+                      <div style={{ fontWeight: 600, fontSize: 12 }}>{label}</div>
                     </label>
                   ))}
                 </div>
                 <div style={{ marginTop: 10 }}>
+                  <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 10 }}>Additional comments or justification</div>
                   <textarea
-                    className="suo-input" style={{ width: "100%", minHeight: 60, resize: "vertical", fontFamily: "var(--sans)" }}
+                    className="suo-input" style={{ width: "100%", minHeight: 80, resize: "vertical", fontFamily: "var(--sans)" }}
                     value={answers[server.id]?.comment || ""} onChange={e => setAnswer(server.id, "comment", e.target.value)}
-                    placeholder="Optional comment or justification…"
-                  />
+                    placeholder="e.g. This server supports a scheduled monthly job outside business hours…" />
                 </div>
               </div>
             ))}
 
             {submitError && <div style={{ color: "var(--crit)", fontSize: 12, marginBottom: 10 }}>{submitError}</div>}
-            <button className="suo-btn suo-btn-primary" style={{ width: "100%" }} onClick={submit} disabled={submitting}>
-              {submitting ? "Submitting…" : servers.length > 1 ? `Submit all ${servers.length} responses` : "Submit feedback"}
+            <button className="suo-btn suo-btn-primary" style={{ width: "100%", marginTop: 10 }} onClick={submit} disabled={submitting}>
+              {submitting ? "Submitting…" : servers.length > 1 ? `Submit all ${servers.length} responses` : "Submit response"}
             </button>
           </>
         )}
@@ -1649,7 +1754,7 @@ function OwnerDashboard({ auth, onLogout }) {
   const [servers, setServers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
-  const [expandedId, setExpandedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
   const [answers, setAnswers] = useState({});
   const [submittingId, setSubmittingId] = useState(null);
   const [toasts, setToasts] = useState([]);
@@ -1675,8 +1780,8 @@ function OwnerDashboard({ auth, onLogout }) {
 
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
-  function toggleExpand(server) {
-    setExpandedId(prev => prev === server.id ? null : server.id);
+  function selectServer(server) {
+    setSelectedId(server.id);
     setAnswers(prev => ({ ...prev, [server.id]: prev[server.id] || { decision: server.ownerResponse || "keep", comment: "" } }));
   }
 
@@ -1700,20 +1805,20 @@ function OwnerDashboard({ auth, onLogout }) {
     }
   }
 
-  const needingResponse = servers.filter(s => s.status === "Underutilized" && !s.ownerResponded);
+  // const needingResponse = servers.filter(s => s.status === "Underutilized" && !s.ownerResponded);
+  const needingResponse = servers.filter(s => s.remindersSent > 0 && !s.ownerResponded);
   const respondedCount = servers.filter(s => s.ownerResponded).length;
-  // Needs-response servers surface first, then everything else — so the most
-  // actionable items aren't buried below a long list of already-fine servers.
   const sortedServers = [...servers].sort((a, b) => {
-      const aPriority = a.status === "Underutilized" && !a.ownerResponded ? 0 : 1;
-      const bPriority = b.status === "Underutilized" && !b.ownerResponded ? 0 : 1;
-      return aPriority - bPriority;
+    const aPriority = a.status === "Underutilized" && !a.ownerResponded ? 0 : 1;
+    const bPriority = b.status === "Underutilized" && !b.ownerResponded ? 0 : 1;
+    return aPriority - bPriority;
   });
+  const selectedServer = servers.find(s => s.id === selectedId) || null;
 
   return (
-    <div className="suo-root" style={{ alignItems: "flex-start", justifyContent: "center", padding: "32px 20px" }}>
+    <div className="suo-root" style={{ alignItems: "flex-start", justifyContent: "center", padding: "20px 0px" }}>
       <GlobalStyle />
-      <div style={{ width: "100%", maxWidth: 760 }}>
+      <div style={{ width: "100%", maxWidth: "calc(100vw - 260px)" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div className="suo-brand-mark" />
@@ -1739,17 +1844,21 @@ function OwnerDashboard({ auth, onLogout }) {
         )}
 
         {!loading && !loadError && servers.length === 0 && (
-          <div className="suo-card" style={{ textAlign: "center", color: "var(--text-dim)", padding: "40px 20px" }}>
+          <div className="suo-card" style={{ textAlign: "center", color: "var(--text-dim)", padding: "20px 0px" }}>
             No servers are associated with your account email ({auth.email || "none on file"}). If this looks wrong, check with infrastructure ops that your account email matches the owner email on your servers.
           </div>
         )}
 
         {!loading && !loadError && servers.length > 0 && (
           <>
-            <div className="suo-kpi-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
               <div className="suo-card">
                 <div className="suo-kpi-label">Total Servers</div>
                 <div className="suo-kpi-value">{servers.length}</div>
+              </div>
+              <div className="suo-card">
+                <div className="suo-kpi-label">Total Underutilized Servers</div>
+                <div className="suo-kpi-value">{servers.filter(s => s.status === "Underutilized").length}</div>
               </div>
               <div className="suo-card" style={{ borderColor: needingResponse.length > 0 ? "var(--warn-dim)" : undefined }}>
                 <div className="suo-kpi-label" style={{ color: needingResponse.length > 0 ? "var(--warn)" : undefined }}>Needs Your Response</div>
@@ -1761,89 +1870,125 @@ function OwnerDashboard({ auth, onLogout }) {
               </div>
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {sortedServers.map(server => {
-                const needsAttention = server.status === "Underutilized" && !server.ownerResponded;
-                return (
-                <div key={server.id} className="suo-card" style={{ cursor: "pointer", borderLeft: needsAttention ? "3px solid var(--warn)" : undefined }}>
-                  <div onClick={() => toggleExpand(server)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div>
-                      <div className="suo-mono" style={{ fontSize: 13, fontWeight: 700 }}>{server.name}</div>
-                      <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginTop: 2 }}>{server.application} · {server.environment}</div>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <StatusBadge status={server.status} />
-                      {expandedId === server.id ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            <div className="suo-table-wrap" style={{ marginBottom: 10 }}>
+              <div style={{ maxHeight: 260, overflowY: "auto" }} className="suo-scrollbar">
+                <table className="suo-table">
+                  <thead>
+                    <tr>
+                      <th>Server</th>
+                      <th>Application</th>
+                      <th>Company</th>
+                      <th>Environment</th>
+                      <th>CPU</th>
+                      <th>Memory</th>
+                      <th>Storage</th>
+                      <th>Status</th>
+                      <th>Reminders</th>
+                      <th>Last Reminder</th>
+                      <th>Response</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedServers.map(s => (
+                      <tr key={s.id} className={`suo-row ${selectedId === s.id ? "selected" : ""}`} onClick={() => selectServer(s)}>
+                        <td className="suo-mono" style={{ fontWeight: 600 }}>{s.name}</td>
+                        <td>{s.application}</td>
+                        <td style={{ color: s.company ? "var(--text)" : "var(--text-faint)" }}>{s.company || "—"}</td>
+                        <td><span className="suo-chip">{s.environment}</span></td>
+                        <td><LedGauge value={s.cpu} status={s.status} /></td>
+                        <td><LedGauge value={s.memory} status={s.status} /></td>
+                        <td><LedGauge value={s.storage} status={s.status} /></td>
+                        <td><StatusBadge status={s.status} /></td>
+                        <td className="suo-mono">{s.remindersSent}</td>
+                        <td className="suo-mono" style={{ color: "var(--text-dim)" }}>{fmtDate(s.lastReminderDate)}</td>
+                        <td>
+                          {s.ownerResponded
+                            ? <span className="suo-badge suo-badge-neutral">{RESPONSE_LABELS[s.ownerResponse]}</span>
+                            : (s.remindersSent > 0 ? <span className="suo-badge suo-badge-warn">Needs response</span> : <span style={{ color: "var(--text-faint)", fontSize: 11.5 }}>—</span>)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {selectedServer && (
+              <>
+                <div className="suo-card">
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 5 }}>{selectedServer.name}</div>
+                  <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 5 }}>
+                    {selectedServer.application}{selectedServer.company ? ` · ${selectedServer.company}` : ""} · {selectedServer.environment}
+                  </div>
+                  {selectedServer.description && <div style={{ fontSize: 12, color: "var(--text-faint)", marginBottom: 10 }}>{selectedServer.description}</div>}
+                  <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+                    <StatusBadge status={selectedServer.status} />
+                    {!selectedServer.ownerResponded && <span className="suo-badge suo-badge-neutral">Needs response</span>}
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                    {[
+                      { label: "CPU", value: selectedServer.cpu, alloc: `${selectedServer.cpuAllocated ?? "—"} vCPU allocated`, reclaim: selectedServer.reclaimableVcpu != null ? `${selectedServer.reclaimableVcpu} vCPU reclaimable` : null },
+                      { label: "Memory", value: selectedServer.memory, alloc: `${selectedServer.memAllocated ?? "—"} GB allocated`, reclaim: selectedServer.reclaimableMemoryGb != null ? `${selectedServer.reclaimableMemoryGb} GB reclaimable` : null },
+                      { label: "Storage", value: selectedServer.storage, alloc: selectedServer.storageAllocated != null ? `${selectedServer.storageAllocated} GB allocated` : "Not tracked", reclaim: selectedServer.reclaimableStorageGb != null ? `${selectedServer.reclaimableStorageGb} GB reclaimable` : null },
+                    ].map(m => (
+                      <div key={m.label} className="suo-card" style={{ padding: 10 }}>
+                        <div style={{ fontSize: 11, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 600 }}>{m.label}</div>
+                        <div className="suo-mono" style={{ fontSize: 18, fontWeight: 700, margin: "5px 0" }}>{m.value != null ? `${m.value}%` : "—"}</div>
+                        <LedGauge value={m.value} status={selectedServer.status} big />
+                        <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 10 }}>{m.alloc}</div>
+                        {m.reclaim && <div style={{ fontSize: 11, color: "var(--warn)", marginTop: 10 }}>{m.reclaim}</div>}
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}><History size={14} /> Reminder history</div>
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 10 }}>
+                    {selectedServer.remindersSent} reminder{selectedServer.remindersSent === 1 ? "" : "s"} received
+                    {selectedServer.lastReminderDate ? ` · last ${fmtDate(selectedServer.lastReminderDate)}` : ""}
+                    {selectedServer.ownerResponded ? " · you've responded" : " · no responses yet"}
+                  </div>
+                </div>
+
+                {selectedServer.comments.length > 0 && (
+                  <div className="suo-card">
+                    <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}><MessageSquare size={14} /> Previous responses</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {selectedServer.comments.map((c, i) => (
+                        <div key={i} style={{ background: "var(--surface-2)", borderRadius: 8, padding: 10 }}>
+                          <div style={{ fontSize: 11, fontWeight: 600 }}>{c.author} <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>· {fmtDate(c.date)}</span></div>
+                          <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 5 }}>{c.text}</div>
+                        </div>
+                      ))}
                     </div>
                   </div>
+                )}
 
-                  {expandedId === server.id && (
-                    <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
-                      {(server.description || server.os || server.company) && (
-                        <div style={{ fontSize: 11.5, color: "var(--text-faint)", marginBottom: 14 }}>
-                          {server.company ? `${server.company} · ` : ""}{server.description}{server.description && server.os ? " · " : ""}{server.os ? `OS: ${server.os}` : ""}
-                        </div>
-                      )}
-
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
-                        {[
-                          { label: "CPU", value: server.cpu, alloc: `${server.cpuAllocated ?? "—"} vCPU allocated` },
-                          { label: "Memory", value: server.memory, alloc: `${server.memAllocated ?? "—"} GB allocated` },
-                          { label: "Storage", value: server.storage, alloc: server.storageAllocated != null ? `${server.storageAllocated} GB allocated` : "Not tracked" },
-                        ].map(m => (
-                          <div key={m.label} className="suo-card" style={{ padding: 10 }}>
-                            <div style={{ fontSize: 10.5, color: "var(--text-faint)", textTransform: "uppercase" }}>{m.label}</div>
-                            <div className="suo-mono" style={{ fontSize: 17, fontWeight: 700, margin: "5px 0" }}>{m.value != null ? `${m.value}%` : "—"}</div>
-                            <LedGauge value={m.value} status={server.status} />
-                            <div style={{ fontSize: 10, color: "var(--text-faint)", marginTop: 6 }}>{m.alloc}</div>
-                          </div>
-                        ))}
-                      </div>
-
-                      <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginBottom: 12 }}>
-                        {server.remindersSent} reminder{server.remindersSent === 1 ? "" : "s"} sent
-                        {server.lastReminderDate ? ` · last ${fmtDate(server.lastReminderDate)}` : ""}
-                        {server.ownerResponded ? " · you've responded" : ""}
-                      </div>
-
-                      {server.comments.length > 0 && (
-                        <div style={{ marginBottom: 14 }}>
-                          <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}><MessageSquare size={13} /> Previous responses</div>
-                          {server.comments.map((c, i) => (
-                            <div key={i} style={{ background: "var(--surface-2)", borderRadius: 8, padding: 10, marginBottom: 6 }}>
-                              <div style={{ fontSize: 11, color: "var(--text-faint)" }}>{fmtDate(c.date)}</div>
-                              <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 3 }}>{c.text}</div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 8 }}>Is this allocation still needed?</div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                        {Object.entries(RESPONSE_LABELS).map(([key, label]) => (
-                          <label key={key} className={`suo-radio-card ${(answers[server.id]?.decision) === key ? "active" : ""}`} onClick={e => e.stopPropagation()}>
-                            <input type="radio" name={`myresp-${server.id}`} checked={(answers[server.id]?.decision) === key} onChange={() => setAnswer(server.id, "decision", key)} />
-                            <div style={{ fontWeight: 600, fontSize: 12 }}>{label}</div>
-                          </label>
-                        ))}
-                      </div>
-                      <textarea
-                        className="suo-input" style={{ width: "100%", minHeight: 56, resize: "vertical", fontFamily: "var(--sans)", marginTop: 8 }}
-                        value={answers[server.id]?.comment || ""} onChange={e => setAnswer(server.id, "comment", e.target.value)}
-                        onClick={e => e.stopPropagation()}
-                        placeholder="Optional comment or justification…"
-                      />
-                      <button
-                        className="suo-btn suo-btn-primary suo-btn-sm" style={{ marginTop: 10 }}
-                        onClick={e => { e.stopPropagation(); respond(server); }} disabled={submittingId === server.id}
-                      >
-                        {submittingId === server.id ? "Submitting…" : "Submit response"}
-                      </button>
-                    </div>
-                  )}
+                <div className="suo-card">
+                  <div style={{ fontWeight: 600, fontSize: 13,  marginTop: 10, marginBottom: 10 }}>Is this allocation still needed?</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {Object.entries(RESPONSE_LABELS).map(([key, label]) => (
+                      <label key={key} className={`suo-radio-card ${(answers[selectedServer.id]?.decision) === key ? "active" : ""}`}>
+                        <input type="radio" name={`myresp-${selectedServer.id}`} checked={(answers[selectedServer.id]?.decision) === key} onChange={() => setAnswer(selectedServer.id, "decision", key)} />
+                        <div style={{ fontWeight: 600, fontSize: 12 }}>{label}</div>
+                      </label>
+                    ))}
+                  </div>
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 10 }}>Additional comments or justification</div>
+                    <textarea
+                      className="suo-input" style={{ width: "100%", minHeight: 80, resize: "vertical", fontFamily: "var(--sans)" }}
+                      value={answers[selectedServer.id]?.comment || ""} onChange={e => setAnswer(selectedServer.id, "comment", e.target.value)}
+                      placeholder="e.g. This server supports a scheduled monthly job outside business hours…" />
+                  </div>
+                  <button
+                    className="suo-btn suo-btn-primary" style={{ marginTop: 10 }}
+                    onClick={() => respond(selectedServer)} disabled={submittingId === selectedServer.id}>
+                    {submittingId === selectedServer.id ? "Submitting…" : "Submit response"}
+                  </button>
                 </div>
-              );})}
-            </div>
+              </>
+            )}
           </>
         )}
       </div>

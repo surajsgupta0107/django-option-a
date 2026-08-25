@@ -382,7 +382,7 @@ def my_servers_view(request):
     servers = list(
         Server.objects.filter(owner_email__iexact=user.email).prefetch_related("reminders", "responses")
     )
-    servers = [s for s in servers if s.status == "Underutilized"]  # added for testing in local
+    # servers = [s for s in servers if s.status == "Underutilized"]  # added for testing in local
     data = ServerSerializer(servers, many=True).data
     return DRFResponse({"total": len(data), "items": data})
 
