@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
-from .models import Server, UtilizationSnapshot, Reminder, Response, ThresholdConfig
+from .models import Server, UtilizationSnapshot, Reminder, Response, ThresholdConfig, UploadedSheet
 
 
 @admin.register(Server)
@@ -31,6 +31,30 @@ class ThresholdConfigAdmin(admin.ModelAdmin):
 
 
 admin.site.register(UtilizationSnapshot)
+
+
+@admin.register(UploadedSheet)
+class UploadedSheetAdmin(admin.ModelAdmin):
+    list_display = (
+        "original_filename",
+        "uploaded_at",
+        "uploaded_by",
+        "imported_rows",
+        "skipped_rows",
+        "import_batch_id",
+    )
+    list_filter = ("uploaded_at",)
+    search_fields = (
+        "original_filename",
+        "import_batch_id",
+        "uploaded_by__username",
+    )
+    readonly_fields = (
+        "uploaded_at",
+        "import_batch_id",
+        "imported_rows",
+        "skipped_rows",
+    )
 
 
 # Re-register User with email + staff status visible in the list view — that's the

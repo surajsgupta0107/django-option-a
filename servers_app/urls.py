@@ -11,6 +11,11 @@ urlpatterns = [
     path("servers", views.list_servers),
     path("servers/upload", views.upload_servers),
     path("servers/export/csv", views.export_csv),
+
+    path("uploads", views.list_uploaded_sheets),
+    path("uploads/<int:sheet_id>/download", views.download_uploaded_sheet),
+    path("uploads/compare", views.compare_uploaded_sheets),
+
     path("servers/meta/filters", views.filter_options),
     path("servers/<int:server_id>", views.get_server),
 

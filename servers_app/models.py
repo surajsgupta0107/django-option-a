@@ -131,3 +131,43 @@ class Response(models.Model):
     comment = models.TextField(null=True, blank=True)
     responded_by_name = models.CharField(max_length=255, null=True, blank=True)
     responded_by_email = models.EmailField(null=True, blank=True)
+
+
+class UploadedSheet(models.Model):
+    """
+    Stores every original spreadsheet uploaded by an admin.
+
+    The current Server table represents only the latest active dataset.
+    UploadedSheet preserves the original files so they can be downloaded
+    later and compared against each other.
+    """
+    file = models.FileField(upload_to="uploaded_sheets/%Y/%m/%d/")
+    original_filename = models.CharField(max_length=255)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    uploaded_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="uploaded_sheets",
+    )
+
+    imported_rows = models.PositiveIntegerField(default=0)
+    skipped_rows = models.PositiveIntegerField(default=0)
+
+    import_batch_id = models.CharField(
+        max_length=64,
+        unique=True,
+        db_index=True,
+    )
+
+    def __str__(self):
+        return self.original_filename
+
+    @property
+    def file_size(self):
+        try:
+            return self.file.size
+        except Exception:
+            return 0

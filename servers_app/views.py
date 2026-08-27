@@ -1,8 +1,9 @@
 import csv
 import datetime as dt
 import uuid
+import os
 
-from django.http import HttpResponse
+from django.http import HttpResponse, FileResponse
 from django.db.models import Q
 from django.contrib.auth import authenticate, get_user_model
 from rest_framework.authtoken.models import Token
@@ -11,7 +12,7 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response as DRFResponse
 from rest_framework.exceptions import NotFound, ValidationError, AuthenticationFailed, PermissionDenied
 
-from .models import Server, UtilizationSnapshot, Reminder, Response, ThresholdConfig
+from .models import Server, UtilizationSnapshot, Reminder, Response, ThresholdConfig, UploadedSheet
 from .serializers import ServerSerializer, ThresholdConfigSerializer, ResponseSubmitSerializer
 from .security import require_admin, require_owner_access, verify_owner_link_token
 from .importer import parse_upload
@@ -130,14 +131,24 @@ def upload_servers(request):
         raise ValidationError("No file provided")
 
     try:
-        records = parse_upload(file.name, file.read())
+        # records = parse_upload(file.name, file.read())  # old
+        content = file.read()
+        records = parse_upload(file.name, content)  # new
     except Exception as e:
         raise ValidationError(f"Could not parse file: {e}")
 
     if not records:
         raise ValidationError("No usable rows found in that file")
 
-    batch_id = dt.datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    # batch_id = dt.datetime.utcnow().strftime("%Y%m%d%H%M%S")  # old
+    batch_id = uuid.uuid4().hex  # new
+
+    uploaded_sheet = UploadedSheet.objects.create(
+        file=file,
+        original_filename=file.name,
+        uploaded_by=request.user,
+        import_batch_id=batch_id,
+    )
 
     # Replace-all-on-upload for Phase 1 simplicity (matches the FastAPI backend and prototype).
     Server.objects.all().delete()
@@ -174,7 +185,647 @@ def upload_servers(request):
         except Exception as e:
             errors.append(f"{rec.get('name', '?')}: {e}")
 
-    return DRFResponse({"imported": imported, "skipped": len(records) - imported, "errors": errors})
+    uploaded_sheet.imported_rows = imported
+    uploaded_sheet.skipped_rows = len(records) - imported
+    uploaded_sheet.save(
+        update_fields=["imported_rows", "skipped_rows"]
+    )
+
+    # return DRFResponse({"imported": imported, "skipped": len(records) - imported, "errors": errors})  # old
+    return DRFResponse({
+        "imported": imported,
+        "skipped": len(records) - imported,
+        "errors": errors,
+        "sheet_id": uploaded_sheet.id,
+        "filename": uploaded_sheet.original_filename,
+    })  # new
+
+
+@api_view(["GET"])
+def list_uploaded_sheets(request):
+    require_admin(request)
+
+    sheets = UploadedSheet.objects.select_related(
+        "uploaded_by"
+    ).order_by("-uploaded_at")
+
+    items = []
+
+    for sheet in sheets:
+        items.append({
+            "id": sheet.id,
+            "filename": sheet.original_filename,
+            "uploaded_at": sheet.uploaded_at,
+            "uploaded_by": (
+                sheet.uploaded_by.username
+                if sheet.uploaded_by
+                else None
+            ),
+            "imported_rows": sheet.imported_rows,
+            "skipped_rows": sheet.skipped_rows,
+            "file_size": sheet.file_size,
+            "import_batch_id": sheet.import_batch_id,
+        })
+
+    return DRFResponse({
+        "total": len(items),
+        "items": items,
+    })
+
+
+@api_view(["GET"])
+def download_uploaded_sheet(request, sheet_id):
+    require_admin(request)
+
+    try:
+        sheet = UploadedSheet.objects.get(pk=sheet_id)
+    except UploadedSheet.DoesNotExist:
+        raise NotFound("Uploaded sheet not found")
+
+    if not sheet.file:
+        raise NotFound("Uploaded file is missing")
+
+    try:
+        sheet.file.open("rb")
+    except Exception:
+        raise NotFound("Uploaded file could not be opened")
+
+    response = FileResponse(
+        sheet.file,
+        as_attachment=True,
+        filename=sheet.original_filename,
+    )
+
+    return response
+
+
+@api_view(["GET"])
+def compare_uploaded_sheets(request):
+    require_admin(request)
+
+    sheet_a_id = request.query_params.get("sheet_a")
+    sheet_b_id = request.query_params.get("sheet_b")
+
+    sheets = UploadedSheet.objects.all().order_by("-uploaded_at")
+
+    if sheets.count() < 2:
+        raise ValidationError(
+            "At least two uploaded sheets are required for comparison."
+        )
+
+    # ---------------------------------------------------------
+    # DEFAULT COMPARISON
+    #
+    # No IDs supplied:
+    #   Sheet A = previous upload
+    #   Sheet B = current/latest upload
+    #
+    # This means Compare Sheets automatically opens with:
+    #
+    # Previous → immediately previous upload
+    # Current  → latest upload
+    # ---------------------------------------------------------
+    if not sheet_a_id and not sheet_b_id:
+        sheet_b = sheets[0]
+        sheet_a = sheets[1]
+
+    else:
+        if not sheet_a_id or not sheet_b_id:
+            raise ValidationError(
+                "Both sheet_a and sheet_b are required."
+            )
+
+        try:
+            sheet_a = UploadedSheet.objects.get(pk=sheet_a_id)
+        except UploadedSheet.DoesNotExist:
+            raise NotFound("Previous sheet not found.")
+
+        try:
+            sheet_b = UploadedSheet.objects.get(pk=sheet_b_id)
+        except UploadedSheet.DoesNotExist:
+            raise NotFound("Current sheet not found.")
+
+    if sheet_a.id == sheet_b.id:
+        raise ValidationError(
+            "Please select two different sheets."
+        )
+
+    # ---------------------------------------------------------
+    # READ BOTH ORIGINAL FILES
+    # ---------------------------------------------------------
+
+    try:
+        sheet_a.file.open("rb")
+        content_a = sheet_a.file.read()
+
+        sheet_b.file.open("rb")
+        content_b = sheet_b.file.read()
+
+        records_a = parse_upload(
+            sheet_a.original_filename,
+            content_a,
+        )
+
+        records_b = parse_upload(
+            sheet_b.original_filename,
+            content_b,
+        )
+
+    except Exception as e:
+        raise ValidationError(
+            f"Could not parse sheets: {e}"
+        )
+
+    # ---------------------------------------------------------
+    # INDEX BY SERVER NAME
+    # ---------------------------------------------------------
+
+    previous_rows = {
+        str(row.get("name", "")).strip().lower(): row
+        for row in records_a
+        if row.get("name")
+    }
+
+    current_rows = {
+        str(row.get("name", "")).strip().lower(): row
+        for row in records_b
+        if row.get("name")
+    }
+
+    previous_keys = set(previous_rows.keys())
+    current_keys = set(current_rows.keys())
+
+    added_keys = current_keys - previous_keys
+    removed_keys = previous_keys - current_keys
+    common_keys = previous_keys & current_keys
+
+    # ---------------------------------------------------------
+    # HELPERS
+    # ---------------------------------------------------------
+
+    def number(value):
+        if value is None:
+            return None
+
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def diff(current, previous):
+        current_num = number(current)
+        previous_num = number(previous)
+
+        if current_num is None or previous_num is None:
+            return None
+
+        return round(current_num - previous_num, 2)
+
+    def metric(previous, current):
+        return {
+            "previous": number(previous),
+            "current": number(current),
+            "change": diff(current, previous),
+        }
+
+    # ---------------------------------------------------------
+    # BUILD FULL DETAIL TABLE
+    # ---------------------------------------------------------
+
+    details = []
+
+    for key in sorted(previous_keys | current_keys):
+
+        previous = previous_rows.get(key)
+        current = current_rows.get(key)
+
+        # -----------------------------------------------------
+        # SERVER EXISTS ONLY IN CURRENT
+        # -----------------------------------------------------
+
+        if previous is None:
+            source = current
+
+            details.append({
+                "server_name": source.get("name"),
+                "change_type": "added",
+
+                "application": source.get("application"),
+                "owner": source.get("owner"),
+                "owner_email": source.get("owner_email"),
+                "company": source.get("company"),
+                "description": source.get("description"),
+                "os": source.get("os"),
+                "environment": source.get("environment"),
+
+                "cpu": metric(
+                    None,
+                    source.get("cpu_pct"),
+                ),
+                "memory": metric(
+                    None,
+                    source.get("memory_pct"),
+                ),
+                "storage": metric(
+                    None,
+                    source.get("storage_pct"),
+                ),
+
+                "cpu_allocated": metric(
+                    None,
+                    source.get("cpu_allocated"),
+                ),
+                "memory_allocated": metric(
+                    None,
+                    source.get("mem_allocated_gb"),
+                ),
+                "storage_allocated": metric(
+                    None,
+                    source.get("storage_allocated_gb"),
+                ),
+
+                "cpu_reclaimable": metric(
+                    None,
+                    source.get("reclaimable_vcpu"),
+                ),
+                "memory_reclaimable": metric(
+                    None,
+                    source.get("reclaimable_memory_gb"),
+                ),
+
+                "status": "Added",
+            })
+
+            continue
+
+        # -----------------------------------------------------
+        # SERVER EXISTS ONLY IN PREVIOUS
+        # -----------------------------------------------------
+
+        if current is None:
+            source = previous
+
+            details.append({
+                "server_name": source.get("name"),
+                "change_type": "removed",
+
+                "application": source.get("application"),
+                "owner": source.get("owner"),
+                "owner_email": source.get("owner_email"),
+                "company": source.get("company"),
+                "description": source.get("description"),
+                "os": source.get("os"),
+                "environment": source.get("environment"),
+
+                "cpu": metric(
+                    source.get("cpu_pct"),
+                    None,
+                ),
+                "memory": metric(
+                    source.get("memory_pct"),
+                    None,
+                ),
+                "storage": metric(
+                    source.get("storage_pct"),
+                    None,
+                ),
+
+                "cpu_allocated": metric(
+                    source.get("cpu_allocated"),
+                    None,
+                ),
+                "memory_allocated": metric(
+                    source.get("mem_allocated_gb"),
+                    None,
+                ),
+                "storage_allocated": metric(
+                    source.get("storage_allocated_gb"),
+                    None,
+                ),
+
+                "cpu_reclaimable": metric(
+                    source.get("reclaimable_vcpu"),
+                    None,
+                ),
+                "memory_reclaimable": metric(
+                    source.get("reclaimable_memory_gb"),
+                    None,
+                ),
+
+                "status": "Removed",
+            })
+
+            continue
+
+        # -----------------------------------------------------
+        # SERVER EXISTS IN BOTH
+        # -----------------------------------------------------
+
+        details.append({
+            "server_name": current.get("name"),
+
+            "change_type": (
+                "changed"
+                if any([
+                    previous.get("application") != current.get("application"),
+                    previous.get("owner") != current.get("owner"),
+                    previous.get("owner_email") != current.get("owner_email"),
+                    previous.get("company") != current.get("company"),
+                    previous.get("description") != current.get("description"),
+                    previous.get("os") != current.get("os"),
+                    previous.get("environment") != current.get("environment"),
+                    previous.get("cpu_pct") != current.get("cpu_pct"),
+                    previous.get("memory_pct") != current.get("memory_pct"),
+                    previous.get("storage_pct") != current.get("storage_pct"),
+                    previous.get("cpu_allocated") != current.get("cpu_allocated"),
+                    previous.get("mem_allocated_gb") != current.get("mem_allocated_gb"),
+                    previous.get("storage_allocated_gb") != current.get("storage_allocated_gb"),
+                    previous.get("reclaimable_vcpu") != current.get("reclaimable_vcpu"),
+                    previous.get("reclaimable_memory_gb") != current.get("reclaimable_memory_gb"),
+                ])
+                else "unchanged"
+            ),
+
+            # -------------------------------------------------
+            # NORMAL SERVER FIELDS
+            # Current value is shown as the primary value.
+            # -------------------------------------------------
+
+            "application": current.get("application"),
+            "owner": current.get("owner"),
+            "owner_email": current.get("owner_email"),
+            "company": current.get("company"),
+            "description": current.get("description"),
+            "os": current.get("os"),
+            "environment": current.get("environment"),
+
+            # -------------------------------------------------
+            # UTILIZATION
+            # -------------------------------------------------
+
+            "cpu": metric(
+                previous.get("cpu_pct"),
+                current.get("cpu_pct"),
+            ),
+
+            "memory": metric(
+                previous.get("memory_pct"),
+                current.get("memory_pct"),
+            ),
+
+            "storage": metric(
+                previous.get("storage_pct"),
+                current.get("storage_pct"),
+            ),
+
+            # -------------------------------------------------
+            # ALLOCATED
+            # -------------------------------------------------
+
+            "cpu_allocated": metric(
+                previous.get("cpu_allocated"),
+                current.get("cpu_allocated"),
+            ),
+
+            "memory_allocated": metric(
+                previous.get("mem_allocated_gb"),
+                current.get("mem_allocated_gb"),
+            ),
+
+            "storage_allocated": metric(
+                previous.get("storage_allocated_gb"),
+                current.get("storage_allocated_gb"),
+            ),
+
+            # -------------------------------------------------
+            # RECLAIMABLE
+            # -------------------------------------------------
+
+            "cpu_reclaimable": metric(
+                previous.get("reclaimable_vcpu"),
+                current.get("reclaimable_vcpu"),
+            ),
+
+            "memory_reclaimable": metric(
+                previous.get("reclaimable_memory_gb"),
+                current.get("reclaimable_memory_gb"),
+            ),
+
+            "status": (
+                "Changed"
+                if any([
+                    previous.get("cpu_pct") != current.get("cpu_pct"),
+                    previous.get("memory_pct") != current.get("memory_pct"),
+                    previous.get("storage_pct") != current.get("storage_pct"),
+                    previous.get("cpu_allocated") != current.get("cpu_allocated"),
+                    previous.get("mem_allocated_gb") != current.get("mem_allocated_gb"),
+                    previous.get("storage_allocated_gb") != current.get("storage_allocated_gb"),
+                    previous.get("reclaimable_vcpu") != current.get("reclaimable_vcpu"),
+                    previous.get("reclaimable_memory_gb") != current.get("reclaimable_memory_gb"),
+                ])
+                else "Unchanged"
+            ),
+        })
+
+    # ---------------------------------------------------------
+    # SUMMARY
+    # ---------------------------------------------------------
+
+    added = sum(
+        1 for row in details
+        if row["change_type"] == "added"
+    )
+
+    removed = sum(
+        1 for row in details
+        if row["change_type"] == "removed"
+    )
+
+    changed = sum(
+        1 for row in details
+        if row["change_type"] == "changed"
+    )
+
+    unchanged = sum(
+        1 for row in details
+        if row["change_type"] == "unchanged"
+    )
+
+    return DRFResponse({
+        "previous_sheet": {
+            "id": sheet_a.id,
+            "filename": sheet_a.original_filename,
+            "uploaded_at": sheet_a.uploaded_at,
+            "rows": len(records_a),
+        },
+
+        "current_sheet": {
+            "id": sheet_b.id,
+            "filename": sheet_b.original_filename,
+            "uploaded_at": sheet_b.uploaded_at,
+            "rows": len(records_b),
+        },
+
+        "summary": {
+            "previous_rows": len(records_a),
+            "current_rows": len(records_b),
+            "added": added,
+            "removed": removed,
+            "changed": changed,
+            "unchanged": unchanged,
+        },
+
+        "details": details,
+    })
+
+
+@api_view(["GET"])
+def compare_uploaded_sheets_v1(request):
+    require_admin(request)
+
+    sheet_a_id = request.query_params.get("sheet_a")
+    sheet_b_id = request.query_params.get("sheet_b")
+
+    if not sheet_a_id or not sheet_b_id:
+        raise ValidationError(
+            "Both sheet_a and sheet_b are required."
+        )
+
+    if sheet_a_id == sheet_b_id:
+        raise ValidationError(
+            "Please select two different sheets."
+        )
+
+    try:
+        sheet_a = UploadedSheet.objects.get(pk=sheet_a_id)
+    except UploadedSheet.DoesNotExist:
+        raise NotFound("Sheet A not found.")
+
+    try:
+        sheet_b = UploadedSheet.objects.get(pk=sheet_b_id)
+    except UploadedSheet.DoesNotExist:
+        raise NotFound("Sheet B not found.")
+
+    try:
+        sheet_a.file.open("rb")
+        content_a = sheet_a.file.read()
+
+        sheet_b.file.open("rb")
+        content_b = sheet_b.file.read()
+
+        records_a = parse_upload(
+            sheet_a.original_filename,
+            content_a,
+        )
+
+        records_b = parse_upload(
+            sheet_b.original_filename,
+            content_b,
+        )
+
+    except Exception as e:
+        raise ValidationError(
+            f"Could not parse sheets: {e}"
+        )
+
+    rows_a = {
+        str(row["name"]).strip().lower(): row
+        for row in records_a
+        if row.get("name")
+    }
+
+    rows_b = {
+        str(row["name"]).strip().lower(): row
+        for row in records_b
+        if row.get("name")
+    }
+
+    keys_a = set(rows_a)
+    keys_b = set(rows_b)
+
+    added = []
+    removed = []
+    changed = []
+    unchanged = []
+
+    compare_fields = [
+        "application",
+        "owner",
+        "owner_email",
+        "company",
+        "description",
+        "environment",
+        "cpu_pct",
+        "memory_pct",
+        "storage_pct",
+        "cpu_allocated",
+        "mem_allocated_gb",
+        "storage_allocated_gb",
+        "reclaimable_vcpu",
+        "reclaimable_memory_gb",
+    ]
+
+    for key in sorted(keys_b - keys_a):
+        added.append({
+            "server": rows_b[key],
+        })
+
+    for key in sorted(keys_a - keys_b):
+        removed.append({
+            "server": rows_a[key],
+        })
+
+    for key in sorted(keys_a & keys_b):
+        old_row = rows_a[key]
+        new_row = rows_b[key]
+
+        differences = []
+
+        for field in compare_fields:
+            old_value = old_row.get(field)
+            new_value = new_row.get(field)
+
+            if old_value != new_value:
+                differences.append({
+                    "field": field,
+                    "old_value": old_value,
+                    "new_value": new_value,
+                })
+
+        if differences:
+            changed.append({
+                "server_name": old_row["name"],
+                "changes": differences,
+            })
+        else:
+            unchanged.append({
+                "server_name": old_row["name"],
+            })
+
+    return DRFResponse({
+        "sheet_a": {
+            "id": sheet_a.id,
+            "filename": sheet_a.original_filename,
+            "uploaded_at": sheet_a.uploaded_at,
+        },
+        "sheet_b": {
+            "id": sheet_b.id,
+            "filename": sheet_b.original_filename,
+            "uploaded_at": sheet_b.uploaded_at,
+        },
+        "summary": {
+            "sheet_a_rows": len(records_a),
+            "sheet_b_rows": len(records_b),
+            "added": len(added),
+            "removed": len(removed),
+            "changed": len(changed),
+            "unchanged": len(unchanged),
+        },
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "unchanged": unchanged,
+    })
 
 
 @api_view(["GET"])

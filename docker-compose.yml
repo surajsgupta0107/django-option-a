@@ -38,6 +38,8 @@ services:
       SMTP_HOST: ${SMTP_HOST:-}
     ports:
       - "8000:8000"
+    volumes:
+      - media:/app/media
     depends_on:
       postgres:
         condition: service_healthy
@@ -79,3 +81,4 @@ services:
 
 volumes:
   pgdata:
+  media:

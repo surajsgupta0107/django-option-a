@@ -15,6 +15,8 @@ import {
 // together; nothing is torn out, so re-enabling later is a one-line change back.
 const FEATURE_FLAGS = {
   ownerPortalTab: true,
+  downloadsTab: true,
+  compareSheetsTab: true,
 };
 
 /* ---------------------------------- API CLIENT ---------------------------------- */
@@ -417,6 +419,20 @@ function toCSV(servers) {
   return lines.join("\n");
 }
 
+function formatFileSize(bytes) {
+  if (!bytes) return "—";
+
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 const SAMPLE_TEMPLATE_CSV = `Server Name,Application,Owner,Owner Email,Environment,CPU Utilization %,Memory Utilization %,Storage Utilization %,Allocated vCPU,Allocated Memory GB,Allocated Storage GB
 PRD-ORD-001,Order Management,Priya Nair,priya.nair@company.com,Production,14,22,18,8,32,500
 DEV-CRM-002,CRM Suite,Marcus Chen,marcus.chen@company.com,Development,63,58,44,4,16,250`;
@@ -431,6 +447,13 @@ export default function App({ auth, onLogout }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [view, setView] = useState("dashboard");
+  const [uploadedSheets, setUploadedSheets] = useState([]);
+  const [uploadsLoading, setUploadsLoading] = useState(false);
+  const [compareResult, setCompareResult] = useState(null);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareSheetA, setCompareSheetA] = useState("");
+  const [compareSheetB, setCompareSheetB] = useState("");
+  const [compareDetails, setCompareDetails] = useState([]);
   useEffect(() => {
     if (view === "portal" && !FEATURE_FLAGS.ownerPortalTab) setView("dashboard");
   }, [view]);
@@ -464,6 +487,23 @@ export default function App({ auth, onLogout }) {
   const [sortDir, setSortDir] = useState("asc");
   const [selectedIds, setSelectedIds] = useState([]);
   const [modalServer, setModalServer] = useState(null);
+
+  // Compare sheets state
+  const [compareSearch, setCompareSearch] = useState("");
+  const [compareFilter, setCompareFilter] = useState("All");
+  const [compareFilterApp, setCompareFilterApp] = useState("All");
+  const [compareFilterCompany, setCompareFilterCompany] = useState("All");
+  const [compareFilterOwner, setCompareFilterOwner] = useState("All");
+  const [compareFilterEnv, setCompareFilterEnv] = useState("All");
+  const [compareFilterAppMulti, setCompareFilterAppMulti] = useState([]);
+  const [compareFilterCompanyMulti, setCompareFilterCompanyMulti] = useState([]);
+  const [compareFilterOwnerMulti, setCompareFilterOwnerMulti] = useState([]);
+  const [compareFilterEnvMulti, setCompareFilterEnvMulti] = useState([]);
+  const [compareFilterStatusMulti, setCompareFilterStatusMulti] = useState([]);
+  const [compareFilterStatus, setCompareFilterStatus] = useState("All");
+  const [compareNeedsReminderOnly, setCompareNeedsReminderOnly] = useState(false);
+  const [compareSortKey, setCompareSortKey] = useState("server_name");
+  const [compareSortDir, setCompareSortDir] = useState("asc");
 
   // Owner portal state
   const [portalSelectedId, setPortalSelectedId] = useState("");
@@ -504,6 +544,90 @@ export default function App({ auth, onLogout }) {
   }
 
   useEffect(() => { loadAll(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [apiBaseUrl]);
+
+  async function fetchUploadedSheets() {
+    setUploadsLoading(true);
+
+    try {
+      const result = await apiFetch(apiBaseUrl, "/uploads", { authToken: auth.token });
+
+      setUploadedSheets(result.items || []);
+    } catch (err) {
+      pushToast(`Couldn't load uploaded sheets: ${err.message}`);
+    } finally {
+      setUploadsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (view === "downloads" || view === "compare") {
+      fetchUploadedSheets();
+    }
+  }, [view, apiBaseUrl]);
+
+  async function downloadUploadedSheet(sheet) {
+    try {
+      const response = await fetch(`${apiBaseUrl}/uploads/${sheet.id}/download`, { headers: { Authorization: `Token ${auth.token}` } });
+
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+
+      const blob = await response.blob();
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+
+      a.href = url;
+      a.download = sheet.filename;
+
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      pushToast(`Download failed: ${err.message}`);
+    }
+  }
+
+  async function loadComparison(previousId, currentId) {
+    setCompareLoading(true);
+
+    try {
+      const result = await apiFetch(apiBaseUrl, `/uploads/compare?sheet_a=${previousId}&sheet_b=${currentId}`, { authToken: auth.token });
+
+      setCompareResult(result);
+    } catch (err) {
+      pushToast(`Comparison failed: ${err.message}`);
+    } finally {
+      setCompareLoading(false);
+    }
+  }
+
+  async function compareSheets() {
+    if (!compareSheetA || !compareSheetB) {
+      pushToast("Please select both sheets.");
+      return;
+    }
+
+    await loadComparison(compareSheetA, compareSheetB);
+  }
+
+  useEffect(() => {
+    if (view === "compare" && uploadedSheets.length >= 2) {
+      const current = uploadedSheets[0];
+      const previous = uploadedSheets[1];
+
+      const previousId = String(previous.id);
+      const currentId = String(current.id);
+
+      setCompareSheetA(previousId);
+      setCompareSheetB(currentId);
+
+      loadComparison(previousId, currentId);
+    }
+  }, [view, uploadedSheets]);
 
   const withStatus = servers; // status is computed server-side and already attached per server
 
@@ -557,7 +681,6 @@ export default function App({ auth, onLogout }) {
   const companiesInData = useMemo(() => Array.from(new Set(servers.map(s => s.company).filter(Boolean))).sort(), [servers]);
   const ownersInData = useMemo(() => Array.from(new Set(servers.map(s => s.owner))).sort(), [servers]);
 
-
   const filteredSorted = useMemo(() => {
     let list = withStatus.filter(s => {
       if (search && !(`${s.name} ${s.application} ${s.owner} ${s.company || ""}`.toLowerCase().includes(search.toLowerCase()))) return false;
@@ -589,9 +712,122 @@ export default function App({ auth, onLogout }) {
     filterStatusMulti, filterStatus, needsReminderOnly, sortKey, sortDir,
   ]);
 
+  // ==========================================================
+  // COMPARE SHEETS - SEARCH + FILTER
+  // ==========================================================
+
+  const compareApplicationsInData = useMemo(() => {
+    return Array.from(new Set((compareResult?.details || []).map(s => s.application).filter(Boolean))).sort();
+  }, [compareResult]);
+  const compareCompaniesInData = useMemo(() => {
+    return Array.from(new Set((compareResult?.details || []).map(s => s.company).filter(Boolean))).sort();
+  }, [compareResult]);
+  const compareOwnersInData = useMemo(() => {
+    return Array.from(new Set((compareResult?.details || []).map(s => s.owner).filter(Boolean))).sort();
+  }, [compareResult]);
+  const compareEnvironmentsInData = useMemo(() => {
+    return Array.from(new Set((compareResult?.details || []).map(s => s.environment).filter(Boolean))).sort();
+  }, [compareResult]);
+
+  const compareChangeTypes = ["Added", "Removed", "Changed", "Unchanged"];
+  const compareUtilizationStatuses = ["Underutilized", "Optimal", "Overutilized"];
+
+  const filteredCompareDetails = useMemo(() => {
+    let list = [...(compareResult?.details || [])];
+
+    // ========================================================
+    // FILTER
+    // ========================================================
+    list = list.filter(server => {
+      // ======================================================
+      // SEARCH - Searches across the most useful server fields
+      // ======================================================
+      if (compareSearch) {
+        const searchText = [
+          server.server_name,
+          server.application,
+          server.owner,
+          server.owner_email,
+          server.company,
+          server.environment,
+          server.os,
+          server.description,
+        ].filter(Boolean).join(" ").toLowerCase();
+
+        if (!searchText.includes(compareSearch.toLowerCase())) return false;
+      }
+      // ======================================================
+      // SINGLE SELECT FILTERS
+      // ======================================================
+      if (compareFilterApp !== "All" && server.application !== compareFilterApp) return false;
+      if (compareFilterCompany !== "All" && server.company !== compareFilterCompany) return false;
+      if (compareFilterOwner !== "All" && server.owner !== compareFilterOwner) return false;
+      if (compareFilterEnv !== "All" && server.environment !== compareFilterEnv) return false;
+      // ======================================================
+      // MULTI SELECT FILTERS
+      // ======================================================
+      if (compareFilterAppMulti.length > 0 && !compareFilterAppMulti.includes(server.application)) return false;
+      if (compareFilterCompanyMulti.length > 0 && !compareFilterCompanyMulti.includes(server.company)) return false;
+      if (compareFilterOwnerMulti.length > 0 && !compareFilterOwnerMulti.includes(server.owner)) return false;
+      if (compareFilterEnvMulti.length > 0 && !compareFilterEnvMulti.includes(server.environment)) return false;
+      // ======================================================
+      // CHANGE TYPE FILTERS
+      // ======================================================
+      if (compareFilter !== "All" && server.change_type !== compareFilter.toLowerCase()) return false;
+      if (compareFilterStatusMulti.length > 0 && !compareFilterStatusMulti.includes(server.change_type)) return false;
+      if (compareFilterStatus !== "All" && server.change_type !== compareFilterStatus.toLowerCase()) return false;
+
+      return true;
+    });
+
+    // ========================================================
+    // SORT
+    // ========================================================
+    list.sort((a, b) => {
+      let av = a[compareSortKey];
+      let bv = b[compareSortKey];
+
+      if (compareSortKey === "server_name") { av = a.server_name; bv = b.server_name; }
+      if (compareSortKey === "cpu") { av = a.cpu?.current ?? -1; bv = b.cpu?.current ?? -1; }
+      if (compareSortKey === "memory") { av = a.memory?.current ?? -1; bv = b.memory?.current ?? -1; }
+      if (compareSortKey === "storage") { av = a.storage?.current ?? -1; bv = b.storage?.current ?? -1; }
+      if (compareSortKey === "cpuChange") { av = a.cpu?.change ?? -Infinity; bv = b.cpu?.change ?? -Infinity; }
+      if (compareSortKey === "memoryChange") { av = a.memory?.change ?? -Infinity; bv = b.memory?.change ?? -Infinity; }
+      if (compareSortKey === "storageChange") { av = a.storage?.change ?? -Infinity; bv = b.storage?.change ?? -Infinity; }
+      if (typeof av === "string") { av = av.toLowerCase(); bv = String(bv || "").toLowerCase(); }
+      if (av < bv) { return compareSortDir === "asc" ? -1 : 1; }
+      if (av > bv) { return compareSortDir === "asc" ? 1 : -1; }
+
+      return 0;
+    });
+
+    return list;
+  }, [
+    compareResult,
+    compareSearch,
+    compareFilter,
+    compareFilterApp,
+    compareFilterCompany,
+    compareFilterOwner,
+    compareFilterEnv,
+    compareFilterAppMulti,
+    compareFilterCompanyMulti,
+    compareFilterOwnerMulti,
+    compareFilterEnvMulti,
+    compareFilterStatusMulti,
+    compareFilterStatus,
+    compareSortKey,
+    compareSortDir,
+  ]);
+
   function toggleSort(key) {
     if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
     else { setSortKey(key); setSortDir("asc"); }
+  }
+
+  function toggleCompareSort(key) {
+    if (compareSortKey === key) setCompareSortDir(d => d === "asc" ? "desc" : "asc");
+    else { setCompareSortKey(key); setCompareSortDir("asc"); }
   }
 
   async function sendReminder(ids) {
@@ -635,6 +871,7 @@ export default function App({ auth, onLogout }) {
       pushToast(`Imported ${result.imported} servers from ${file.name}${result.skipped ? ` (${result.skipped} skipped)` : ""}`);
       setUploadOpen(false);
       await fetchServers();
+      await fetchUploadedSheets();
     } catch (err) {
       pushToast(`Upload failed: ${err.message}`);
     } finally {
@@ -659,6 +896,8 @@ export default function App({ auth, onLogout }) {
         {[
           { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
           { key: "servers", label: "Servers", icon: Server },
+          { key: "downloads", label: "Downloads", icon: Download, enabled: FEATURE_FLAGS.downloadsTab },
+          { key: "compare", label: "Compare Sheets", icon: ArrowUpDown, enabled: FEATURE_FLAGS.compareSheetsTab },
           { key: "portal", label: "Owner Portal", icon: UserRound, enabled: FEATURE_FLAGS.ownerPortalTab },
           { key: "settings", label: "Settings", icon: SlidersHorizontal },
         ].filter(item => item.enabled !== false).map(item => (
@@ -682,12 +921,16 @@ export default function App({ auth, onLogout }) {
             <h1>
               {view === "dashboard" && "Utilization Overview"}
               {view === "servers" && "Servers"}
+              {view === "downloads" && "Downloads"}
+              {view === "compare" && "Compare Sheets"}
               {view === "portal" && "Application Owner Portal"}
               {view === "settings" && "Settings"}
             </h1>
             <div className="suo-topbar-sub">
               {view === "dashboard" && "Organization-wide infrastructure efficiency"}
               {view === "servers" && `${filteredSorted.length} of ${servers.length} servers shown`}
+              {view === "downloads" && "Download previously uploaded utilization sheets"}
+              {view === "compare" && "Compare any two previously uploaded sheets"}
               {view === "portal" && "Review a server and share whether the allocation is still needed"}
               {view === "settings" && "Configure what counts as underutilized"}
             </div>
@@ -741,6 +984,43 @@ export default function App({ auth, onLogout }) {
               sortKey={sortKey} sortDir={sortDir} toggleSort={toggleSort}
               selectedIds={selectedIds} setSelectedIds={setSelectedIds}
               setModalServer={setModalServer} sendReminder={sendReminder}
+            />
+          )}
+
+          {view === "downloads" && (
+            <DownloadsView
+              sheets={uploadedSheets}
+              loading={uploadsLoading}
+              onDownload={downloadUploadedSheet}
+              onRefresh={fetchUploadedSheets}
+            />
+          )}
+
+          {view === "compare" && (
+            <CompareSheetsView
+              sheets={uploadedSheets} loading={uploadsLoading}
+              sheetA={compareSheetA} sheetB={compareSheetB}
+              setSheetA={setCompareSheetA} setSheetB={setCompareSheetB}
+              onCompare={compareSheets} compareLoading={compareLoading}
+              result={compareResult}
+              compareSearch={compareSearch} setCompareSearch={setCompareSearch}
+              compareFilter={compareFilter} setCompareFilter={setCompareFilter}
+              compareFilterApp={compareFilterApp} setCompareFilterApp={setCompareFilterApp}
+              compareFilterCompany={compareFilterCompany} setCompareFilterCompany={setCompareFilterCompany}
+              compareFilterOwner={compareFilterOwner} setCompareFilterOwner={setCompareFilterOwner}
+              compareFilterEnv={compareFilterEnv} setCompareFilterEnv={setCompareFilterEnv}
+              compareFilterAppMulti={compareFilterAppMulti} setCompareFilterAppMulti={setCompareFilterAppMulti}
+              compareFilterCompanyMulti={compareFilterCompanyMulti} setCompareFilterCompanyMulti={setCompareFilterCompanyMulti}
+              compareFilterOwnerMulti={compareFilterOwnerMulti} setCompareFilterOwnerMulti={setCompareFilterOwnerMulti}
+              compareFilterEnvMulti={compareFilterEnvMulti} setCompareFilterEnvMulti={setCompareFilterEnvMulti}
+              compareFilterStatusMulti={compareFilterStatusMulti} setCompareFilterStatusMulti={setCompareFilterStatusMulti}
+              compareFilterStatus={compareFilterStatus} setCompareFilterStatus={setCompareFilterStatus}
+              compareSortKey={compareSortKey} compareSortDir={compareSortDir} toggleCompareSort={toggleCompareSort}
+              compareApplicationsInData={compareApplicationsInData}
+              compareCompaniesInData={compareCompaniesInData}
+              compareOwnersInData={compareOwnersInData}
+              compareEnvironmentsInData={compareEnvironmentsInData}
+              filteredCompareDetails={filteredCompareDetails}
             />
           )}
 
@@ -918,6 +1198,115 @@ function MultiSelectBox({ label, options, selected, onChange }) {
     </div>
   );
 }
+function CompareServerFilters({
+  search, setSearch,
+  filterApp, setFilterApp, applications,
+  filterCompany, setFilterCompany, companies,
+  filterOwner, setFilterOwner, owners,
+  filterEnv, setFilterEnv, environments,
+  filterStatus, setFilterStatus,
+  filterAppMulti, setFilterAppMulti,
+  filterCompanyMulti, setFilterCompanyMulti,
+  filterOwnerMulti, setFilterOwnerMulti,
+  filterEnvMulti, setFilterEnvMulti,
+  filterStatusMulti, setFilterStatusMulti,
+  sortKey, sortDir, toggleSort,
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {/* ================================================== */}
+      {/* PRIMARY FILTERS */}
+      {/* ================================================== */}
+      <div className="suo-card" style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+        {/* SEARCH */}
+        <div className="suo-search-wrap">
+          <Search size={14} style={{ color: "var(--text-faint)", flexShrink: 0 }} />
+          <input className="suo-input" placeholder="Search server, app, company, owner…" value={search} onChange={e => setSearch(e.target.value)} />
+          {search && (
+            <button type="button" onClick={() => setSearch("")} style={{ border: "none", background: "none", color: "var(--text-faint)", cursor: "pointer", padding: 0, display: "flex" }}>
+              <X size={14} />
+            </button>
+          )}
+        </div>
+        {/* APPLICATION */}
+        <select className="suo-select" value={filterApp} onChange={e => setFilterApp(e.target.value)}>
+          <option value="All">All applications</option>
+          {applications.map(application => (
+            <option key={application} value={application}>{application}</option>
+          ))}
+        </select>
+        {/* COMPANY */}
+        {companies.length > 0 && (
+          <select className="suo-select" value={filterCompany} onChange={e => setFilterCompany(e.target.value)}>
+            <option value="All">All companies</option>
+            {companies.map(company => (
+              <option key={company} value={company}>{company}</option>
+            ))}
+          </select>
+        )}
+        {/* OWNER */}
+        <select className="suo-select" value={filterOwner} onChange={e => setFilterOwner(e.target.value)}>
+          <option value="All">All owners</option>
+          {owners.map(owner => (
+            <option key={owner} value={owner}>{owner}</option>
+          ))}
+        </select>
+        {/* ENVIRONMENT */}
+        <select className="suo-select" value={filterEnv} onChange={e => setFilterEnv(e.target.value)}>
+          <option value="All">All environments</option>
+          {environments.map(environment => (
+            <option key={environment} value={environment}>{environment}</option>
+          ))}
+        </select>
+        {/* CHANGE TYPE */}
+        <select className="suo-select" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+          <option value="All">All changes</option>
+          <option value="Added">Added</option>
+          <option value="Removed">Removed</option>
+          <option value="Changed">Changed</option>
+          <option value="Unchanged">Unchanged</option>
+        </select>
+      </div>
+      {/* ================================================== */}
+      {/* MULTI SELECT FILTERS */}
+      {/* ================================================== */}
+      <div className="suo-card" style={{ display: "flex", flexWrap: "wrap", gap: 18 }}>
+        <MultiSelectBox label="Applications" options={applications} selected={filterAppMulti} onChange={setFilterAppMulti} />
+        {companies.length > 0 && (
+          <MultiSelectBox label="Companies" options={companies} selected={filterCompanyMulti} onChange={setFilterCompanyMulti} />
+        )}
+        <MultiSelectBox label="Owners" options={owners} selected={filterOwnerMulti} onChange={setFilterOwnerMulti} />
+        <MultiSelectBox label="Environments" options={environments} selected={filterEnvMulti} onChange={setFilterEnvMulti} />
+        <MultiSelectBox label="Change Types" options={["Added", "Removed", "Changed", "Unchanged"]} selected={filterStatusMulti} onChange={setFilterStatusMulti} />
+      </div>
+      {/* ================================================== */}
+      {/* SORTING */}
+      {/* ================================================== */}
+      <div className="suo-card" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+        <span style={{ fontSize: 11, color: "var(--text-faint)", textTransform: "uppercase", fontWeight: 600, letterSpacing: 0.4 }}>Sort</span>
+        {[
+          ["server_name", "Server"],
+          ["application", "Application"],
+          ["company", "Company"],
+          ["owner", "Owner"],
+          ["environment", "Environment"],
+          ["cpu", "CPU Current"],
+          ["cpuChange", "CPU Change"],
+          ["memory", "Memory Current"],
+          ["memoryChange", "Memory Change"],
+          ["storage", "Storage Current"],
+          ["storageChange", "Storage Change"],
+          ["change_type", "Change Type"],
+        ].map(([key, label]) => (
+          <button key={key} className={`suo-btn suo-btn-sm ${sortKey === key ? "suo-btn-primary" : ""}`} onClick={() => toggleSort(key)}>
+            {label}
+            {sortKey === key && (sortDir === "asc" ? <ChevronUp size={11} /> : <ChevronDown size={11} />)}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 function ServersView(props) {
   const {
     filteredSorted, search, setSearch, filterApp, setFilterApp, applicationsInData,
@@ -952,8 +1341,8 @@ function ServersView(props) {
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <div className="suo-card" style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
         <div className="suo-search-wrap">
-          <Search size={13} />
-          <input className="suo-input" placeholder="Search server, app, owner…" value={search} onChange={e => setSearch(e.target.value)} />
+          <Search size={14} />
+          <input className="suo-input" placeholder="Search server, app, company, owner…" value={search} onChange={e => setSearch(e.target.value)} />
         </div>
         <select className="suo-select" value={filterApp} onChange={e => setFilterApp(e.target.value)}>
           <option value="All">All applications</option>
@@ -1138,6 +1527,451 @@ function ServerModal({ server, onClose, sendReminder, emailTemplate }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ---------------------------------- DOWNLOADS VIEW ---------------------------------- */
+function DownloadsView({ sheets, loading, onDownload, onRefresh }) {
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      <div className="suo-card" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>Uploaded sheets</div>
+          <div style={{ fontSize: 13, color: "var(--text-faint)", marginTop: 5 }}>
+            Every uploaded CSV or Excel file is preserved here.
+          </div>
+        </div>
+        <button className="suo-btn" onClick={onRefresh} disabled={loading}>
+          <RefreshCw size={13} /> Refresh
+        </button>
+      </div>
+      <div className="suo-table-wrap">
+        {loading ? (
+          <div style={{ padding: 30, textAlign: "center", color: "var(--text-faint)" }}>Loading uploaded sheets…</div>
+        ) : sheets.length === 0 ? (
+          <div style={{ padding: 30, textAlign: "center", color: "var(--text-faint)" }}>No uploaded sheets yet.</div>
+        ) : (
+          <table className="suo-table">
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Uploaded</th>
+                <th>Uploaded By</th>
+                <th>Rows</th>
+                <th>Skipped</th>
+                <th>Size</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sheets.map(sheet => (
+                <tr key={sheet.id}>
+                  <td>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <FileSpreadsheet size={15} color="var(--accent)" />
+                      <span className="suo-mono">{sheet.filename}</span>
+                    </div>
+                  </td>
+                  <td>{new Date(sheet.uploaded_at).toLocaleString()}</td>
+                  <td>{sheet.uploaded_by || "—"}</td>
+                  <td>{sheet.imported_rows}</td>
+                  <td>{sheet.skipped_rows}</td>
+                  <td>{formatFileSize(sheet.file_size)}</td>
+                  <td style={{ textAlign: "right" }}>
+                    <button className="suo-btn suo-btn-sm" onClick={() => onDownload(sheet)}>
+                      <Download size={12} /> Download
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------- COMPARE SHEETS VIEW ---------------------------------- */
+function CompareMetricHeaders() {
+  return (
+    <>
+      <th>Previous</th>
+      <th>Current</th>
+      <th>Change</th>
+    </>
+  );
+}
+function formatNumber(value) {
+  if (value == null) return "—";
+  if (Number.isInteger(value)) return String(value);
+
+  return Number(value).toFixed(2);
+}
+function formatCompareValue(value, suffix = "") {
+  if (value == null) return "—";
+
+  return `${formatNumber(value)}${suffix}`;
+}
+function formatChange(value, suffix = "") {
+  if (value == null) return "—";
+
+  const sign = value > 0 ? "+" : "";
+
+  return `${sign}${formatNumber(value)}${suffix}`;
+}
+function getChangeColor(value) {
+  if (value == null || value === 0) return "var(--text-faint)";
+  if (value > 0) return "var(--danger)";
+
+  return "var(--success)";
+}
+function CompareMetricCells({ metric, suffix = "" }) {
+  const previous = metric?.previous;
+  const current = metric?.current;
+  const change = metric?.change;
+
+  return (
+    <>
+      <td className="suo-mono">{formatCompareValue(previous, suffix)}</td>
+      <td className="suo-mono" style={{ fontWeight: 700 }}>{formatCompareValue(current, suffix)}</td>
+      <td className="suo-mono" style={{ fontWeight: 700, color: getChangeColor(change) }}>{formatChange(change, suffix)}</td>
+    </>
+  );
+}
+function ChangeTypeBadge({ type }) {
+  if (type === "added") return <span className="suo-badge suo-badge-success">Added</span>;
+  if (type === "removed") return <span className="suo-badge suo-badge-danger">Removed</span>;
+  if (type === "changed") return <span className="suo-badge suo-badge-warn">Changed</span>;
+
+  return <span className="suo-badge suo-badge-neutral">Unchanged</span>;
+}
+function CompareDetailRow({ server }) {
+  return (
+    <tr>
+      {/* ----------------------------------------------- */}
+      {/* NORMAL SERVER FIELDS */}
+      {/* ----------------------------------------------- */}
+      <td><span className="suo-mono">{server.server_name}</span></td>
+      <td>{server.application || "—"}</td>
+      <td>{server.company || "—"}</td>
+      <td>{server.owner || "—"}</td>
+      {/*<td>{server.owner_email || "—"}</td>*/}
+      <td>{server.environment || "—"}</td>
+      {/*<td>{server.os || "—"}</td>*/}
+
+      {/* ----------------------------------------------- */}
+      {/* CPU UTILIZATION */}
+      {/* ----------------------------------------------- */}
+      <CompareMetricCells metric={server.cpu} suffix="%" />
+      {/* CPU ALLOCATED */}
+      <CompareMetricCells metric={server.cpu_allocated} suffix=" vCPU" />
+      {/* CPU RECLAIMABLE */}
+      <CompareMetricCells metric={server.cpu_reclaimable} suffix=" vCPU" />
+
+      {/* ----------------------------------------------- */}
+      {/* MEMORY UTILIZATION */}
+      {/* ----------------------------------------------- */}
+      <CompareMetricCells metric={server.memory} suffix="%" />
+      {/* MEMORY ALLOCATED */}
+      <CompareMetricCells metric={server.memory_allocated} suffix=" GB" />
+      {/* MEMORY RECLAIMABLE */}
+      <CompareMetricCells metric={server.memory_reclaimable} suffix=" GB" />
+
+      {/* ----------------------------------------------- */}
+      {/* STORAGE UTILIZATION */}
+      {/* ----------------------------------------------- */}
+      <CompareMetricCells metric={server.storage} suffix="%" />
+      {/* STORAGE ALLOCATED */}
+      <CompareMetricCells metric={server.storage_allocated} suffix=" GB" />
+
+      {/* ----------------------------------------------- */}
+      {/* OVERALL CHANGE */}
+      {/* ----------------------------------------------- */}
+      <td><ChangeTypeBadge type={server.change_type} /></td>
+    </tr>
+  );
+}
+function CompareSummaryCard({ label, value }) {
+  return (
+    <div className="suo-card">
+      <div className="suo-kpi-label">{label}</div>
+      <div className="suo-kpi-value" style={{ marginTop: 5 }}>{value}</div>
+    </div>
+  );
+}
+function CompareDetailsTable({ details }) {
+  return (
+    <div className="suo-card">
+      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 10 }}>Server details</div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10, fontSize: 11, color: "var(--text-faint)" }}>
+        <span><strong>P</strong> = Previous</span>
+        <span><strong>C</strong> = Current</span>
+        <span><strong>Δ</strong> = Current − Previous</span>
+      </div>
+      <div className="suo-table-wrap">
+        <div style={{ maxHeight: "calc(100vh - 260px)", overflowY: "auto" }} className="suo-scrollbar">
+          <table className="suo-table">
+            <thead>
+              <tr>
+                {/* ----------------------------------------- */}
+                {/* NORMAL SERVER FIELDS */}
+                {/* ----------------------------------------- */}
+                <th rowSpan={2}>Server</th>
+                <th rowSpan={2}>Application</th>
+                <th rowSpan={2}>Company</th>
+                <th rowSpan={2}>Owner</th>
+                {/*<th rowSpan={2}>Owner Email</th>*/}
+                <th rowSpan={2}>Environment</th>
+                {/*<th rowSpan={2}>OS</th>*/}
+                {/* ----------------------------------------- */}
+                {/* CPU */}
+                {/* ----------------------------------------- */}
+                <th colSpan={3} className="compare-group-header">CPU %</th>
+                <th colSpan={3} className="compare-group-header">CPU Allocated</th>
+                <th colSpan={3} className="compare-group-header">CPU Reclaimable</th>
+                {/* ----------------------------------------- */}
+                {/* MEMORY */}
+                {/* ----------------------------------------- */}
+                <th colSpan={3} className="compare-group-header">Memory %</th>
+                <th colSpan={3} className="compare-group-header">Memory Allocated</th>
+                <th colSpan={3} className="compare-group-header">Memory Reclaimable</th>
+                {/* ----------------------------------------- */}
+                {/* STORAGE */}
+                {/* ----------------------------------------- */}
+                <th colSpan={3} className="compare-group-header">Storage %</th>
+                <th colSpan={3} className="compare-group-header">Storage Allocated</th>
+                {/* ----------------------------------------- */}
+                {/* OTHER */}
+                {/* ----------------------------------------- */}
+                <th rowSpan={2}>Change</th>
+              </tr>
+              <tr>
+                <CompareMetricHeaders />
+                <CompareMetricHeaders />
+                <CompareMetricHeaders />
+
+                <CompareMetricHeaders />
+                <CompareMetricHeaders />
+                <CompareMetricHeaders />
+
+                <CompareMetricHeaders />
+                <CompareMetricHeaders />
+              </tr>
+            </thead>
+            <tbody>
+              {details.map((server) => (
+                <CompareDetailRow key={server.server_name} server={server} />
+              ))}
+              {details.length === 0 && (
+                <tr>
+                  <td colSpan={33} style={{ textAlign: "center", padding: 30, color: "var(--text-faint)" }}>No server data available.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+function CompareResult({
+  result,
+  compareSearch, setCompareSearch,
+  compareFilter, setCompareFilter,
+  compareFilterApp, setCompareFilterApp,
+  compareFilterCompany, setCompareFilterCompany,
+  compareFilterOwner, setCompareFilterOwner,
+  compareFilterEnv, setCompareFilterEnv,
+  compareFilterAppMulti, setCompareFilterAppMulti,
+  compareFilterCompanyMulti, setCompareFilterCompanyMulti,
+  compareFilterOwnerMulti, setCompareFilterOwnerMulti,
+  compareFilterEnvMulti, setCompareFilterEnvMulti,
+  compareFilterStatusMulti, setCompareFilterStatusMulti,
+  compareFilterStatus, setCompareFilterStatus,
+  compareSortKey, compareSortDir, toggleCompareSort,
+  compareApplicationsInData,
+  compareCompaniesInData,
+  compareOwnersInData,
+  compareEnvironmentsInData,
+  filteredCompareDetails,
+}) {
+  const summary = result.summary || {};
+  const details = result.details || [];
+
+  return (
+    <div style={{ display: "grid", gap: 12 }}>
+      {/* -------------------------------------------------- */}
+      {/* COMPARISON HEADER */}
+      {/* -------------------------------------------------- */}
+      <div className="suo-card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>Server Details Comparison</div>
+            <div style={{ color: "var(--text-faint)", fontSize: 13, marginTop: 5 }}>
+              Previous:{" "}<strong>{result.previous_sheet.filename}</strong>
+              {" → "}
+              Current:{" "}<strong>{result.current_sheet.filename}</strong>
+            </div>
+            <div style={{ fontSize: 13, marginTop: 5, color: "var(--text-dim)" }}>{details.length} servers</div>
+          </div>
+        </div>
+      </div>
+      {/* -------------------------------------------------- */}
+      {/* SUMMARY */}
+      {/* -------------------------------------------------- */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 }}>
+        <CompareSummaryCard label="Added servers" value={summary.added || 0} />
+        <CompareSummaryCard label="Removed servers" value={summary.removed || 0} />
+        <CompareSummaryCard label="Changed servers" value={summary.changed || 0} />
+        <CompareSummaryCard label="Unchanged servers" value={summary.unchanged || 0} />
+      </div>
+      {/* -------------------------------------------------- */}
+      {/* COMPARE SEARCH + FILTERS */}
+      {/* -------------------------------------------------- */}
+      <div className="suo-card">
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          {/* SEARCH */}
+          <div className="suo-search-wrap">
+            <Search size={14} style={{ color: "var(--text-faint)", flexShrink: 0 }} />
+            <input className="suo-input" placeholder="Search server, app, company, owner…" value={compareSearch} onChange={e => setCompareSearch(e.target.value)} />
+            {compareSearch && (
+              <button type="button" onClick={() => setCompareSearch("")} style={{ border: "none", background: "none", color: "var(--text-faint)", cursor: "pointer", padding: 0, display: "flex" }}>
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          {/*/!* CHANGE TYPE FILTER *!/*/}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {["All", "Added", "Removed", "Changed", "Unchanged"].map(option => (
+              <button key={option} className={`suo-btn ${compareFilter === option ? "suo-btn-primary" : ""}`} onClick={() => setCompareFilter(option)} style={{ fontSize: 11 }}>
+                {option}
+              </button>
+            ))}
+          </div>
+          {/* CLEAR */}
+          {(compareSearch || compareFilter !== "All") && (
+            <button className="suo-btn" onClick={() => { setCompareSearch(""); setCompareFilter("All"); }}>
+              <X size={14} /> Clear
+            </button>
+          )}
+        </div>
+        {/* RESULT COUNT */}
+        <div style={{ marginTop: 10, fontSize: 11, color: "var(--text-faint)" }}>
+          Showing{" "}
+          <strong style={{ color: "var(--text-dim)" }}>{filteredCompareDetails.length}</strong>{" "}
+          of{" "}
+          <strong style={{ color: "var(--text-dim)" }}>{(result.details || []).length}</strong>{" "}
+          servers
+        </div>
+      </div>
+      <CompareServerFilters
+        search={compareSearch} setSearch={setCompareSearch}
+        filterApp={compareFilterApp} setFilterApp={setCompareFilterApp} applications={compareApplicationsInData}
+        filterCompany={compareFilterCompany} setFilterCompany={setCompareFilterCompany} companies={compareCompaniesInData}
+        filterOwner={compareFilterOwner} setFilterOwner={setCompareFilterOwner} owners={compareOwnersInData}
+        filterEnv={compareFilterEnv} setFilterEnv={setCompareFilterEnv} environments={compareEnvironmentsInData}
+        filterStatus={compareFilterStatus} setFilterStatus={setCompareFilterStatus}
+        filterAppMulti={compareFilterAppMulti} setFilterAppMulti={setCompareFilterAppMulti}
+        filterCompanyMulti={compareFilterCompanyMulti} setFilterCompanyMulti={setCompareFilterCompanyMulti}
+        filterOwnerMulti={compareFilterOwnerMulti} setFilterOwnerMulti={setCompareFilterOwnerMulti}
+        filterEnvMulti={compareFilterEnvMulti} setFilterEnvMulti={setCompareFilterEnvMulti}
+        filterStatusMulti={compareFilterStatusMulti} setFilterStatusMulti={setCompareFilterStatusMulti}
+        sortKey={compareSortKey} sortDir={compareSortDir} toggleSort={toggleCompareSort}
+      />
+      {/* -------------------------------------------------- */}
+      {/* FULL DETAIL TABLE */}
+      {/* -------------------------------------------------- */}
+      <CompareDetailsTable details={filteredCompareDetails} />
+    </div>
+  );
+}
+function CompareSheetsView({
+  sheets, loading,
+  sheetA, sheetB,
+  setSheetA, setSheetB,
+  onCompare, compareLoading,
+  result,
+  compareSearch, setCompareSearch,
+  compareFilter, setCompareFilter,
+  compareFilterApp, setCompareFilterApp,
+  compareFilterCompany, setCompareFilterCompany,
+  compareFilterOwner, setCompareFilterOwner,
+  compareFilterEnv, setCompareFilterEnv,
+  compareFilterAppMulti, setCompareFilterAppMulti,
+  compareFilterCompanyMulti, setCompareFilterCompanyMulti,
+  compareFilterOwnerMulti, setCompareFilterOwnerMulti,
+  compareFilterEnvMulti, setCompareFilterEnvMulti,
+  compareFilterStatusMulti, setCompareFilterStatusMulti,
+  compareFilterStatus, setCompareFilterStatus,
+  compareSortKey, compareSortDir, toggleCompareSort,
+  compareApplicationsInData,
+  compareCompaniesInData,
+  compareOwnersInData,
+  compareEnvironmentsInData,
+  filteredCompareDetails,
+}) {  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      <div className="suo-card">
+        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 5 }}>
+          Compare two uploaded sheets
+        </div>
+        <div style={{ color: "var(--text-faint)", fontSize: 12, marginBottom: 10 }}>
+          Select any two uploads. The comparison uses Server Name as the record identifier.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) auto", gap: 10, alignItems: "end" }}>
+          <div>
+            <div className="suo-kpi-label">Sheet A (Previous)</div>
+            <select className="suo-select" style={{ width: "100%", marginTop: 10 }} value={sheetA} onChange={e => setSheetA(e.target.value)} disabled={loading}>
+              <option value="">Select first sheet</option>
+              {sheets.map(sheet => (
+                <option key={sheet.id} value={sheet.id}>
+                  {sheet.filename} —{" "}{new Date(sheet.uploaded_at).toLocaleString()}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div className="suo-kpi-label">Sheet B (Current)</div>
+            <select className="suo-select" style={{ width: "100%", marginTop: 10 }} value={sheetB} onChange={e => setSheetB(e.target.value)} disabled={loading}>
+              <option value="">Select second sheet</option>
+              {sheets.map(sheet => (
+                <option key={sheet.id} value={sheet.id}>
+                  {sheet.filename} —{" "}{new Date(sheet.uploaded_at).toLocaleString()}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button className="suo-btn suo-btn-primary" onClick={onCompare} disabled={compareLoading || !sheetA || !sheetB}>
+            <ArrowUpDown size={13} /> {compareLoading ? "Comparing…" : "Compare"}
+          </button>
+        </div>
+      </div>
+
+      {result && (
+        <CompareResult
+          result={result}
+          compareSearch={compareSearch} setCompareSearch={setCompareSearch}
+          compareFilter={compareFilter} setCompareFilter={setCompareFilter}
+          compareFilterApp={compareFilterApp} setCompareFilterApp={setCompareFilterApp}
+          compareFilterCompany={compareFilterCompany} setCompareFilterCompany={setCompareFilterCompany}
+          compareFilterOwner={compareFilterOwner} setCompareFilterOwner={setCompareFilterOwner}
+          compareFilterEnv={compareFilterEnv} setCompareFilterEnv={setCompareFilterEnv}
+          compareFilterAppMulti={compareFilterAppMulti} setCompareFilterAppMulti={setCompareFilterAppMulti}
+          compareFilterCompanyMulti={compareFilterCompanyMulti} setCompareFilterCompanyMulti={setCompareFilterCompanyMulti}
+          compareFilterOwnerMulti={compareFilterOwnerMulti} setCompareFilterOwnerMulti={setCompareFilterOwnerMulti}
+          compareFilterEnvMulti={compareFilterEnvMulti} setCompareFilterEnvMulti={setCompareFilterEnvMulti}
+          compareFilterStatusMulti={compareFilterStatusMulti} setCompareFilterStatusMulti={setCompareFilterStatusMulti}
+          compareFilterStatus={compareFilterStatus} setCompareFilterStatus={setCompareFilterStatus}
+          compareSortKey={compareSortKey} compareSortDir={compareSortDir} toggleCompareSort={toggleCompareSort}
+          compareApplicationsInData={compareApplicationsInData}
+          compareCompaniesInData={compareCompaniesInData}
+          compareOwnersInData={compareOwnersInData}
+          compareEnvironmentsInData={compareEnvironmentsInData}
+          filteredCompareDetails={filteredCompareDetails}
+        />
+      )}
     </div>
   );
 }

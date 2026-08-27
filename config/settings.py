@@ -76,12 +76,19 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
 # The Vite build for the React frontend outputs here (frontend/vite.config.js
 # build.outDir points at ../static/react). runserver serves it automatically in DEBUG
 # mode with no extra step; run `collectstatic` before deploying behind a real web server.
 STATICFILES_DIRS = [BASE_DIR / "static"]
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
     "staticfiles": {
         "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
     },
