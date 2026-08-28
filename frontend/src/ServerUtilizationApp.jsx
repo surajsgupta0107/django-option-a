@@ -419,6 +419,60 @@ function toCSV(servers) {
   return lines.join("\n");
 }
 
+function compareDetailsToCSV(details) {
+  const header = [
+    "Server Name",
+    "Application",
+    "Company",
+    "Owner",
+    "Owner Email",
+    "Environment",
+
+    "CPU Previous %",
+    "CPU Current %",
+    "CPU Change",
+
+    "Memory Previous %",
+    "Memory Current %",
+    "Memory Change",
+
+    "Storage Previous %",
+    "Storage Current %",
+    "Storage Change",
+
+    "Change Type",
+  ];
+
+  const lines = [header.join(",")];
+
+  details.forEach(server => {
+    lines.push([
+      `"${server.server_name || ""}"`,
+      `"${server.application || ""}"`,
+      `"${server.company || ""}"`,
+      `"${server.owner || ""}"`,
+      `"${server.owner_email || ""}"`,
+      `"${server.environment || ""}"`,
+
+      server.cpu?.previous ?? "",
+      server.cpu?.current ?? "",
+      server.cpu?.change ?? "",
+
+      server.memory?.previous ?? "",
+      server.memory?.current ?? "",
+      server.memory?.change ?? "",
+
+      server.storage?.previous ?? "",
+      server.storage?.current ?? "",
+      server.storage?.change ?? "",
+
+      `"${server.change_type || ""}"`,
+    ].join(","));
+  });
+
+  return lines.join("\n");
+}
+
 function formatFileSize(bytes) {
   if (!bytes) return "—";
 
@@ -938,6 +992,11 @@ export default function App({ auth, onLogout }) {
           <div style={{ display: "flex", gap: 8 }}>
             {view === "servers" && (
               <button className="suo-btn" onClick={() => downloadCSV("server-utilization-export.csv", toCSV(filteredSorted))}>
+                <Download size={13} /> Export view
+              </button>
+            )}
+            {view === "compare" && (
+              <button className="suo-btn" onClick={() => downloadCSV("server-comparison-export.csv", compareDetailsToCSV(filteredCompareDetails))} disabled={!filteredCompareDetails.length}>
                 <Download size={13} /> Export view
               </button>
             )}
